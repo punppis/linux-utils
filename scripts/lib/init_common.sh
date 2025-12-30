@@ -90,7 +90,7 @@ append_sudoers_nopasswd_group() {
 
 apt_update() {
   log_step "Updating apt package lists..."
-  apt-get -fq update
+  apt-get -q update
 }
 
 apt_upgrade() {
