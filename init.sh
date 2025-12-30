@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Curl|bash bootstrapper for linux-utils init-machine.
 # Example:
-#   curl -fsSL https://raw.githubusercontent.com/punpp/linux-utils/main/init.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/punppis/linux-utils/refs/heads/main/init.sh | bash
 
 REPO_URL=${REPO_URL:-https://github.com/punpp/linux-utils.git}
 REPO_BRANCH=${REPO_BRANCH:-main}
