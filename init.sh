@@ -29,7 +29,7 @@ apt_install_git() {
     return
   fi
   log "Installing git..."
-  $SUDO apt-get update -y
+  $SUDO apt-get -fmqy update -y
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y git ca-certificates
 }
 
