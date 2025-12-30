@@ -3,20 +3,34 @@ set -euo pipefail
 
 # Common helpers for init scripts. Can be sourced by other helpers.
 
+# Color setup
+COL_RESET=""; COL_BLUE=""; COL_GREEN=""; COL_YELLOW=""; COL_CYAN=""; COL_MAGENTA=""; COL_RED=""
+if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+  if [[ $(tput colors) -ge 8 ]]; then
+    COL_RESET="\033[0m"
+    COL_BLUE="\033[34m"
+    COL_GREEN="\033[32m"
+    COL_YELLOW="\033[33m"
+    COL_CYAN="\033[36m"
+    COL_MAGENTA="\033[35m"
+    COL_RED="\033[31m"
+  fi
+fi
+
 log_step() {
-  echo -e "\n[+] $*"
+  echo -e "\n${COL_CYAN}[+]${COL_RESET} $*"
 }
 
 log_info() {
-  echo -e "[.] $*"
+  echo -e "${COL_BLUE}[.]${COL_RESET} $*"
 }
 
 log_warn() {
-  echo -e "[!] $*" >&2
+  echo -e "${COL_YELLOW}[!]${COL_RESET} $*" >&2
 }
 
 log_done() {
-  echo -e "[✓] $*"
+  echo -e "${COL_GREEN}[✓]${COL_RESET} $*"
 }
 
 require_root() {
@@ -159,8 +173,12 @@ prompt_additional_packages() {
     return
   fi
   if [[ -t 0 ]]; then
-    read -rp "Enter extra packages to install (space-separated, or leave blank): " extra_input
-    echo "$extra_input"
+    local timeout="${EXTRA_PACKAGES_TIMEOUT:-20}"
+    if read -t "$timeout" -rp "Enter extra packages to install (space-separated, or leave blank) [auto-skip in ${timeout}s]: " extra_input; then
+      echo "$extra_input"
+    else
+      log_info "No extra packages provided (timed out after ${timeout}s)."
+    fi
   fi
 }
 
