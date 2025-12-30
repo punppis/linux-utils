@@ -5,7 +5,9 @@ set -euo pipefail
 # Example:
 #   curl -fsSL https://raw.githubusercontent.com/punppis/linux-utils/refs/heads/main/init.sh | bash
 
-REPO_URL=${REPO_URL:-https://github.com/punpp/linux-utils.git}
+REPO_NAME=${REPO_NAME:-punppis/linux-utils}
+REPO_URL=${REPO_URL:-https://github.com/$REPO_NAME.git}
+REPO_URL_SSH=${REPO_URL_SSH:-git@github.com:$REPO_NAME.git}
 REPO_BRANCH=${REPO_BRANCH:-main}
 TARGET_DIR=${TARGET_DIR:-~/linux-utils}
 INIT_SCRIPT=${INIT_SCRIPT:-scripts/init-machine.sh}
@@ -34,14 +36,45 @@ apt_install_git() {
 }
 
 clone_or_update_repo() {
+  local https_url="$REPO_URL" ssh_url="${REPO_URL_SSH}"
+  if [[ -z "$ssh_url" && "$https_url" =~ ^https?://([^/]+)/(.*)$ ]]; then
+    ssh_url="git@${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+  fi
+  local owner="${SUDO_USER:-${USER}}"
+
   if [[ -d "$TARGET_DIR/.git" ]]; then
     log "Repository already present at $TARGET_DIR; pulling latest ($REPO_BRANCH)..."
-    (cd "$TARGET_DIR" && git fetch --all && git checkout "$REPO_BRANCH" && git pull --ff-only)
+    if ! (cd "$TARGET_DIR" && git fetch --all && git checkout "$REPO_BRANCH" && git pull --ff-only); then
+      warn "Fetch/pull failed; consider checking network or credentials."
+      return 1
+    fi
   else
-    log "Cloning $REPO_URL (branch: $REPO_BRANCH) to $TARGET_DIR..."
-    $SUDO mkdir -p "$TARGET_DIR"
-    $SUDO chown "${SUDO_USER:-${USER}}":"${SUDO_USER:-${USER}}" "$TARGET_DIR"
-    git clone --branch "$REPO_BRANCH" "$REPO_URL" "$TARGET_DIR"
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local cloned=0
+
+    if [[ -n "$ssh_url" ]]; then
+      log "Cloning via SSH: $ssh_url (branch: $REPO_BRANCH)..."
+      if git clone --branch "$REPO_BRANCH" "$ssh_url" "$tmpdir"; then
+        cloned=1
+      else
+        warn "SSH clone failed; falling back to HTTPS."
+      fi
+    fi
+
+    if [[ $cloned -eq 0 ]]; then
+      log "Cloning via HTTPS: $https_url (branch: $REPO_BRANCH)..."
+      if ! git clone --branch "$REPO_BRANCH" "$https_url" "$tmpdir"; then
+        warn "HTTPS clone failed; aborting."
+        rm -rf "$tmpdir"
+        return 1
+      fi
+    fi
+
+    $SUDO rm -rf "$TARGET_DIR"
+    $SUDO mkdir -p "$(dirname "$TARGET_DIR")"
+    $SUDO mv "$tmpdir" "$TARGET_DIR"
+    $SUDO chown -R "$owner":"$owner" "$TARGET_DIR"
   fi
 }
 
