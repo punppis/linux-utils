@@ -76,17 +76,17 @@ append_sudoers_nopasswd_group() {
 
 apt_update() {
   log_step "Updating apt package lists..."
-  apt-get -fmqy update
+  apt-get -fq update
 }
 
 apt_upgrade() {
   log_step "Upgrading packages..."
-  DEBIAN_FRONTEND=noninteractive apt-get -fmqy upgrade
+  DEBIAN_FRONTEND=noninteractive apt-get -mqy upgrade
 }
 
 apt_full_upgrade() {
   log_step "Upgrading distro (full-upgrade)..."
-  DEBIAN_FRONTEND=noninteractive apt-get -fmqy full-upgrade
+  DEBIAN_FRONTEND=noninteractive apt-get -mqy full-upgrade
 }
 
 apt_install_packages() {
@@ -95,7 +95,7 @@ apt_install_packages() {
     return
   fi
   log_step "Installing packages: ${packages[*]}"
-  DEBIAN_FRONTEND=noninteractive apt-get install -fmqy "${packages[@]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -mqy "${packages[@]}"
 }
 
 install_docker_engine() {
