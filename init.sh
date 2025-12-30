@@ -7,7 +7,7 @@ set -euo pipefail
 
 REPO_URL=${REPO_URL:-https://github.com/punpp/linux-utils.git}
 REPO_BRANCH=${REPO_BRANCH:-main}
-TARGET_DIR=${TARGET_DIR:-/opt/linux-utils}
+TARGET_DIR=${TARGET_DIR:-~/linux-utils}
 INIT_SCRIPT=${INIT_SCRIPT:-scripts/init-machine.sh}
 
 log() { echo "[init] $*"; }
