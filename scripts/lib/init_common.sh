@@ -109,7 +109,7 @@ apt_install_packages() {
     return
   fi
   log_step "Installing packages: ${packages[*]}"
-  DEBIAN_FRONTEND=noninteractive apt-get install -mqy "${packages[@]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install --ignore-missing -qy "${packages[@]}"
 }
 
 install_docker_engine() {
