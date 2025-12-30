@@ -61,6 +61,10 @@ resolve_target_user() {
 }
 
 ensure_group() {
+  if [[ $# -lt 1 ]]; then
+    log_warn "ensure_group: missing group name"
+    return 1
+  fi
   local group="$1"
   if ! getent group "$group" >/dev/null; then
     groupadd "$group"
@@ -69,6 +73,10 @@ ensure_group() {
 }
 
 add_user_to_group() {
+  if [[ $# -lt 2 ]]; then
+    log_warn "add_user_to_group: need user and group"
+    return 1
+  fi
   local user="$1" group="$2"
   if id -nG "$user" | grep -qw "$group"; then
     return
