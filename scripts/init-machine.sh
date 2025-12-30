@@ -12,10 +12,9 @@ target_user=$(resolve_target_user)
 log_info "Target user: ${target_user}"
 
 apt_update
-apt_upgrade
 apt_full_upgrade
 
-BASE_PACKAGES=(nano git jq net-tools iftop btop htop iotop glances unzip wget curl ca-certificates gnupg lsb-release python3 python3-pip apt-transport-https software-properties-common)
+BASE_PACKAGES=(nano git rsync jq net-tools iftop btop htop iotop glances unzip wget curl ca-certificates gnupg lsb-release python3 python3-pip apt-transport-https software-properties-common)
 extra_pkgs=$(prompt_additional_packages)
 if [[ -n "${extra_pkgs:-}" ]]; then
   # shellcheck disable=SC2206
@@ -30,6 +29,48 @@ log_done "Installed packages: ${PACKAGES[*]}"
 
 # Configure nano for the target user
 configure_nano "$target_user"
+
+# Aliases / functions
+rsync_block=$(cat <<'EOF'
+rsync-default() {
+  rsync -avh --progress \
+    --exclude="/dev/*" \
+    --exclude="/proc/*" \
+    --exclude="/sys/*" \
+    --exclude="/tmp/*" \
+    --exclude="/run/*" \
+    --exclude="/mnt/*" \
+    --exclude="/media/*" \
+    --exclude="/lost+found" \
+    --exclude="/swapfile" \
+    --exclude="/swap.img" \
+    --exclude="/var/cache/*" \
+    --exclude="/var/tmp/*" \
+    --exclude="/var/log/*" \
+    --exclude="/var/lib/docker/overlay2/*" \
+    --exclude="/var/lib/docker/containers/*" \
+    --exclude="/var/lib/docker/image/*" \
+    --exclude="/var/lib/docker/buildkit/*" \
+    --exclude="/var/lib/docker/network/*" \
+    --exclude="/var/lib/docker/tmp/*" \
+    --exclude="/var/lib/containerd/*" \
+    "$@"
+}
+EOF
+)
+ensure_user_shell_block "$target_user" "rsync-default" "$rsync_block"
+
+docker_block=$(cat <<'EOF'
+docker-up() {
+  docker compose up "$@" --remove-orphans -d
+}
+
+docker-update() {
+  docker compose pull && docker-up "$@" && docker system prune --all -f
+}
+EOF
+)
+ensure_user_shell_block "$target_user" "docker-aliases" "$docker_block"
 
 # Superuser group for passwordless sudo
 SUPERUSER_GROUP="superuser"

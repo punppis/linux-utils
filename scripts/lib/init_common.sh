@@ -125,6 +125,33 @@ EOF
   log_info "Configured nano defaults for ${target_user} (tabs=4, syntax includes)."
 }
 
+ensure_user_shell_block() {
+  # Usage: ensure_user_shell_block <user> <block_id> <multiline_block>
+  local target_user="$1" block_id="$2" block_content="$3"
+  local target_home shellfile start_marker end_marker
+  target_home=$(eval echo "~${target_user}")
+  shellfile="${target_home}/.bash_aliases"
+  start_marker="# BEGIN ${block_id}"
+  end_marker="# END ${block_id}"
+
+  mkdir -p "$target_home"
+  touch "$shellfile"
+
+  # Remove existing block with same id (idempotent update)
+  local start_escaped="${start_marker//\//\\/}"
+  local end_escaped="${end_marker//\//\\/}"
+  sed -i "/^${start_escaped}$/,/^${end_escaped}$/d" "$shellfile"
+
+  {
+    echo "$start_marker"
+    echo "$block_content"
+    echo "$end_marker"
+  } >>"$shellfile"
+
+  chown "$target_user":"$target_user" "$shellfile"
+  log_info "Updated shell aliases/functions block '${block_id}' for ${target_user}."
+}
+
 prompt_additional_packages() {
   local extra_input="${EXTRA_PACKAGES:-}"
   if [[ -n "$extra_input" ]]; then
