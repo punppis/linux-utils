@@ -95,7 +95,7 @@ apt_install_packages() {
     return
   fi
   log_step "Installing packages: ${packages[*]}"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -fmqy "${packages[@]}"
 }
 
 install_docker_engine() {
