@@ -14,7 +14,7 @@ log_info "Target user: ${target_user}"
 apt_update
 apt_full_upgrade
 
-BASE_PACKAGES=(nano git rsync jq net-tools iftop btop htop iotop glances unzip wget curl ca-certificates gnupg lsb-release python3 python3-pip apt-transport-https software-properties-common)
+BASE_PACKAGES=(nano git rsync jq net-tools iftop btop htop iotop glances unzip wget curl ca-certificates gnupg lsb-release python3 python3-pip apt-transport-https software-properties-common speedtest-cli)
 extra_pkgs=$(prompt_additional_packages)
 if [[ -n "${extra_pkgs:-}" ]]; then
   # shellcheck disable=SC2206
