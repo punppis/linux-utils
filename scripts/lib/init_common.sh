@@ -76,17 +76,17 @@ append_sudoers_nopasswd_group() {
 
 apt_update() {
   log_step "Updating apt package lists..."
-  apt-get update -y
+  apt-get -fmqy update
 }
 
 apt_upgrade() {
   log_step "Upgrading packages..."
-  DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+  DEBIAN_FRONTEND=noninteractive apt-get -fmqy upgrade
 }
 
 apt_full_upgrade() {
   log_step "Upgrading distro (full-upgrade)..."
-  DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
+  DEBIAN_FRONTEND=noninteractive apt-get -fmqy full-upgrade
 }
 
 apt_install_packages() {
