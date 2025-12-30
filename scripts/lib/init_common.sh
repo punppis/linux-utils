@@ -69,7 +69,6 @@ ensure_group() {
   if ! getent group "$group" >/dev/null; then
     groupadd "$group"
     sudo newgrp "$group"
-
     log_info "Created group: $group"
   fi
 }

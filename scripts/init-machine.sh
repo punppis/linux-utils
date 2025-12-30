@@ -60,6 +60,18 @@ EOF
 )
 ensure_user_shell_block "$target_user" "rsync-default" "$rsync_block"
 
+docker_block=$(cat <<'EOF'
+docker-up() {
+  docker compose up "$@" --remove-orphans -d
+}
+
+docker-update() {
+  docker compose pull && docker-up "$@" && docker system prune --all -f
+}
+EOF
+)
+ensure_user_shell_block "$target_user" "docker-aliases" "$docker_block"
+
 # Superuser group for passwordless sudo
 SUPERUSER_GROUP="superuser"
 ensure_group "$SUPERUSER_GROUP"
@@ -75,18 +87,6 @@ if [[ -S /var/run/docker.sock ]]; then
   chmod g+rw /var/run/docker.sock
 fi
 log_done "Gave ${target_user} docker access."
-
-docker_block=$(cat <<'EOF'
-docker-up() {
-  docker compose up "$@" --remove-orphans -d
-}
-
-docker-update() {
-  docker compose pull && docker-up "$@" && docker system prune --all -f
-}
-EOF
-)
-ensure_user_shell_block "$target_user" "docker-aliases" "$docker_block"
 
 log_done "Base setup complete."
 maybe_reboot_prompt
