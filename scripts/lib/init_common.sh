@@ -87,7 +87,8 @@ add_user_to_group() {
 }
 
 append_sudoers_nopasswd_group() {
-  local group="$1" entry="%${group} ALL=(ALL) NOPASSWD:ALL"
+  local group="$1"
+  local entry="%${group} ALL=(ALL) NOPASSWD:ALL"
   local file="/etc/sudoers.d/${group}-nopasswd"
   if [[ -f "$file" ]] && grep -Fxq "$entry" "$file"; then
     return
