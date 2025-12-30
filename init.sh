@@ -44,7 +44,7 @@ clone_or_update_repo() {
 
   if [[ -d "$TARGET_DIR/.git" ]]; then
     log "Repository already present at $TARGET_DIR; pulling latest ($REPO_BRANCH)..."
-    if ! (cd "$TARGET_DIR" && git fetch --all && git checkout "$REPO_BRANCH" && git pull --ff-only); then
+    if ! (cd "$TARGET_DIR" && git fetch --all && git checkout "$REPO_BRANCH" && git reset --hard && git pull --ff-only); then
       warn "Fetch/pull failed; consider checking network or credentials."
       return 1
     fi
