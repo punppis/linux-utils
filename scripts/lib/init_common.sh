@@ -177,7 +177,7 @@ prompt_additional_packages() {
     if read -t "$timeout" -rp "Enter extra packages to install (space-separated, or leave blank) [auto-skip in ${timeout}s]: " extra_input; then
       echo "$extra_input"
     else
-      log_info "No extra packages provided (timed out after ${timeout}s)."
+      log_info "No extra packages provided (timed out after ${timeout}s)." >&2
     fi
   fi
 }
