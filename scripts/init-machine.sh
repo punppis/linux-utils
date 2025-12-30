@@ -15,7 +15,7 @@ apt_update
 apt_upgrade
 apt_full_upgrade
 
-BASE_PACKAGES=(nano jq net-tools iftop btop htop iotop glances unzip wget curl ca-certificates gnupg lsb-release python3 python3-pip apt-transport-https software-properties-common)
+BASE_PACKAGES=(nano git jq net-tools iftop btop htop iotop glances unzip wget curl ca-certificates gnupg lsb-release python3 python3-pip apt-transport-https software-properties-common)
 extra_pkgs=$(prompt_additional_packages)
 if [[ -n "${extra_pkgs:-}" ]]; then
   # shellcheck disable=SC2206
