@@ -1,7 +1,512 @@
 #!/usr/bin/env bash
 
+# docker-compose-update
+#
+# A robust Debian/Ubuntu-friendly tool to update Docker Compose stacks.
+# 
+# Default behavior: updates only currently running compose projects
+# With --all: scans for compose files and updates all found projects
+#
+# Assumptions:
+# - Debian/Ubuntu/Raspberry Pi environment
+# - Docker Engine with docker compose plugin installed
+# - Running with sufficient permissions (may need sudo for docker commands)
+
 set -euo pipefail
 
-echo "Hello from my package docker-compose-update!"
+# ==============================================================================
+# CONFIGURATION & DEFAULTS
+# ==============================================================================
 
-exit 0
+# Default configuration
+DEFAULT_ROOT="${HOME:-/opt}"  # Use user's home directory, fallback to /opt
+DEFAULT_MAX_DEPTH=6
+SCAN_MODE="running"  # "running" or "all"
+DRY_RUN=false
+PRUNE_MODE="end"     # "none", "end", or "each"
+ROOT_DIR="$DEFAULT_ROOT"
+MAX_DEPTH="$DEFAULT_MAX_DEPTH"
+PARALLEL_JOBS=$(nproc 2>/dev/null || echo "1")  # Number of parallel jobs based on CPU count
+
+# Lock file to prevent concurrent execution
+LOCK_FILE="/var/lock/docker-compose-update.lock"
+# Fallback to /tmp if /var/lock is not writable
+if [[ ! -w "$(dirname "$LOCK_FILE")" ]]; then
+  LOCK_FILE="/tmp/docker-compose-update.lock"
+fi
+LOCK_FD=200
+
+# Compose file patterns to search for
+COMPOSE_FILE_PATTERNS=("docker-compose.yml" "docker-compose.yaml" "compose.yml" "compose.yaml")
+
+# ==============================================================================
+# HELPER FUNCTIONS
+# ==============================================================================
+
+red() {
+  if [[ -t 2 ]]; then
+    echo -e "\033[31m$*\033[0m" >&2
+  else
+    echo "$*" >&2
+  fi
+}
+
+green() {
+  if [[ -t 2 ]]; then
+    echo -e "\033[32m$*\033[0m" >&2
+  else
+    echo "$*" >&2
+  fi
+}
+
+yellow() {
+  if [[ -t 2 ]]; then
+    echo -e "\033[33m$*\033[0m" >&2
+  else
+    echo "$*" >&2
+  fi
+}
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}
+
+# ==============================================================================
+# LOCK MANAGEMENT
+# ==============================================================================
+
+acquire_lock() {
+  # Try to acquire exclusive lock
+  # Use flock for atomic lock acquisition
+  
+  # Open lock file on the specified file descriptor
+  eval "exec $LOCK_FD>\"$LOCK_FILE\"" 2>/dev/null || {
+    red "Error: Cannot create lock file: $LOCK_FILE"
+    red "Please check permissions or run with appropriate privileges"
+    exit 1
+  }
+  
+  if ! flock -n $LOCK_FD 2>/dev/null; then
+    red "Error: Another instance of docker-compose-update is already running"
+    red "Lock file: $LOCK_FILE"
+    red "If you're sure no other instance is running, remove the lock file manually"
+    exit 1
+  fi
+  
+  # Write PID to lock file for debugging
+  eval "echo \$\$ >&$LOCK_FD"
+  
+  log "Acquired lock: $LOCK_FILE"
+}
+
+release_lock() {
+  if [[ -n "${LOCK_FD:-}" ]]; then
+    flock -u $LOCK_FD 2>/dev/null || true
+    eval "exec $LOCK_FD>&-" 2>/dev/null || true
+    rm -f "$LOCK_FILE" 2>/dev/null || true
+    log "Released lock"
+  fi
+}
+
+# Ensure lock is released on exit
+trap release_lock EXIT INT TERM
+
+# ==============================================================================
+# HELP AND USAGE
+# ==============================================================================
+
+show_help() {
+  cat <<EOF
+docker-compose-update - Update Docker Compose stacks
+
+USAGE:
+    docker-compose-update [OPTIONS]
+
+OPTIONS:
+    --all               Scan for all compose files and update all projects
+                        (default: update only currently running projects)
+    
+    --root DIR          Root directory to scan for compose files
+                        (default: user's home directory, only used with --all)
+    
+    --max-depth N       Maximum directory depth to scan
+                        (default: 6, only used with --all)
+    
+    --jobs N, -j N      Number of parallel jobs (default: CPU count)
+    
+    --no-prune          Skip Docker system prune
+                        (default: prune once at the end)
+    
+    --prune-each        Run Docker system prune after each project update
+                        (default: prune once at the end)
+    
+    --dry-run           Print commands without executing them
+    
+    --help, -h          Show this help message
+
+BEHAVIOR:
+    Default mode (no --all):
+        Detects currently running Docker Compose projects by inspecting
+        container labels and updates only those projects.
+    
+    --all mode:
+        Scans for compose files (docker-compose.yml, compose.yml, etc.)
+        under the specified root directory and updates all found projects.
+    
+    For each project:
+        1. Changes to the project's working directory
+        2. Runs: docker compose pull
+        3. Runs: docker compose up -d --force-recreate --remove-orphans
+    
+    Docker cleanup:
+        Runs: docker system prune -a --volumes --force
+        By default, this runs once at the end.
+        With --prune-each, it runs after each project.
+        With --no-prune, it is skipped entirely.
+
+EXAMPLES:
+    # Update only running compose projects
+    docker-compose-update
+    
+    # Update all compose projects in home directory
+    docker-compose-update --all
+    
+    # Update all projects under /opt
+    docker-compose-update --all --root /opt
+    
+    # Update all projects under /srv with max depth 3
+    docker-compose-update --all --root /srv --max-depth 3
+    
+    # Dry run to see what would be executed
+    docker-compose-update --all --dry-run
+    
+    # Update running projects and prune after each
+    docker-compose-update --prune-each
+
+EOF
+}
+
+# ==============================================================================
+# VALIDATION
+# ==============================================================================
+
+validate_dependencies() {
+  if ! command -v docker &> /dev/null; then
+    red "Error: docker is not installed or not in PATH"
+    exit 1
+  fi
+  
+  # Check for docker compose plugin (not docker-compose standalone)
+  if ! docker compose version &> /dev/null; then
+    red "Error: docker compose plugin is not available"
+    red "Please install docker compose plugin: https://docs.docker.com/compose/install/"
+    exit 1
+  fi
+}
+
+# ==============================================================================
+# CORE FUNCTIONS
+# ==============================================================================
+
+# Execute a command or print it in dry-run mode
+# Args: command string to execute
+# In dry-run mode, prints the command with [DRY-RUN] prefix
+# In normal mode, logs and executes the command using eval
+execute_or_print() {
+  local cmd="$*"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    yellow "[DRY-RUN] $cmd"
+  else
+    log "Executing: $cmd"
+    eval "$cmd"
+  fi
+}
+
+get_running_project_dirs() {
+  # Get unique working directories from running compose containers
+  # Uses the com.docker.compose.project.working_dir label
+  local dirs
+  dirs=$(docker ps --format '{{.Labels}}' 2>/dev/null | \
+         grep -oP 'com\.docker\.compose\.project\.working_dir=\K[^,]+' | \
+         sort -u || true)
+  
+  if [[ -z "$dirs" ]]; then
+    log "No running Docker Compose projects found"
+    return 1
+  fi
+  
+  echo "$dirs"
+}
+
+find_compose_files() {
+  local root="$1"
+  local max_depth="$2"
+  
+  if [[ ! -d "$root" ]]; then
+    red "Error: Root directory does not exist: $root"
+    exit 1
+  fi
+  
+  log "Scanning for compose files under $root (max depth: $max_depth)..."
+  
+  local find_args=(-maxdepth "$max_depth" -type f)
+  local pattern_args=()
+  
+  # Build find expression for multiple patterns
+  for i in "${!COMPOSE_FILE_PATTERNS[@]}"; do
+    if [[ $i -eq 0 ]]; then
+      pattern_args+=(-name "${COMPOSE_FILE_PATTERNS[$i]}")
+    else
+      pattern_args+=(-o -name "${COMPOSE_FILE_PATTERNS[$i]}")
+    fi
+  done
+  
+  find "$root" "${find_args[@]}" \( "${pattern_args[@]}" \) 2>/dev/null || true
+}
+
+update_project() {
+  local project_dir="$1"
+  
+  if [[ ! -d "$project_dir" ]]; then
+    red "Warning: Directory does not exist: $project_dir"
+    return 1
+  fi
+  
+  green "=========================================="
+  log "Updating project in: $project_dir"
+  green "=========================================="
+  
+  # Change to project directory to respect local context (overrides, .env, etc.)
+  # Use trap to ensure popd runs even if commands fail
+  pushd "$project_dir" > /dev/null || {
+    red "Error: Cannot change to directory: $project_dir"
+    return 1
+  }
+  trap 'popd > /dev/null' RETURN
+  
+  # Pull latest images
+  execute_or_print "docker compose pull"
+  
+  # Recreate containers with new images
+  execute_or_print "docker compose up -d --force-recreate --remove-orphans"
+  
+  # Prune after this project if requested
+  if [[ "$PRUNE_MODE" == "each" ]]; then
+    prune_docker
+  fi
+  
+  return 0
+}
+
+# Helper function to update projects in parallel
+# Args: list of directories (one per line)
+update_projects_parallel() {
+  local dirs="$1"
+  local job_count="${2:-1}"
+  
+  if [[ -z "$dirs" ]]; then
+    return 0
+  fi
+  
+  # Count projects
+  local count
+  count=$(echo "$dirs" | grep -c .)
+  
+  if [[ $count -eq 0 ]]; then
+    return 0
+  fi
+  
+  log "Updating $count project(s) with $job_count parallel job(s)..."
+  
+  # Export functions and variables needed by subshells
+  export -f update_project execute_or_print log green yellow red prune_docker
+  export DRY_RUN PRUNE_MODE
+  
+  # Use parallel execution with proper path handling
+  # Create a temporary file with null-delimited paths for safety
+  local tmp_file
+  tmp_file=$(mktemp)
+  
+  # Write paths with null delimiter
+  while IFS= read -r dir; do
+    printf '%s\0' "$dir"
+  done <<< "$dirs" > "$tmp_file"
+  
+  # Use xargs with null delimiter to handle spaces and special characters
+  xargs -0 -P "$job_count" -I {} bash -c 'update_project "$1"' _ {} < "$tmp_file"
+  local result=$?
+  
+  rm -f "$tmp_file"
+  return $result
+}
+
+prune_docker() {
+  green "=========================================="
+  log "Running Docker system prune..."
+  green "=========================================="
+  # Note: This removes ALL unused images (not just dangling), volumes, and build cache
+  # This is intentionally aggressive to free up disk space after updates
+  execute_or_print "docker system prune -a --volumes --force"
+}
+
+update_running_projects() {
+  log "Mode: Update running compose projects"
+  
+  local dirs
+  if ! dirs=$(get_running_project_dirs); then
+    return 0
+  fi
+  
+  # Use parallel execution
+  if ! update_projects_parallel "$dirs" "$PARALLEL_JOBS"; then
+    red "Error: Failed to update projects"
+    return 1
+  fi
+  
+  local count
+  count=$(echo "$dirs" | grep -c .)
+  
+  if [[ $count -eq 0 ]]; then
+    log "No projects updated"
+  else
+    green "Updated $count project(s)"
+  fi
+}
+
+update_all_projects() {
+  log "Mode: Update all compose projects"
+  log "Root: $ROOT_DIR"
+  log "Max depth: $MAX_DEPTH"
+  
+  local compose_files
+  compose_files=$(find_compose_files "$ROOT_DIR" "$MAX_DEPTH")
+  
+  if [[ -z "$compose_files" ]]; then
+    log "No compose files found"
+    return 0
+  fi
+  
+  # Extract unique directories from compose files
+  local unique_dirs
+  unique_dirs=$(echo "$compose_files" | xargs -n1 dirname | sort -u)
+  
+  if [[ -z "$unique_dirs" ]]; then
+    log "No projects to update"
+    return 0
+  fi
+  
+  # Use parallel execution
+  if ! update_projects_parallel "$unique_dirs" "$PARALLEL_JOBS"; then
+    red "Error: Failed to update projects"
+    return 1
+  fi
+  
+  local count
+  count=$(echo "$unique_dirs" | grep -c .)
+  
+  if [[ $count -eq 0 ]]; then
+    log "No projects updated"
+  else
+    green "Updated $count project(s)"
+  fi
+}
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+
+main() {
+  # Parse command-line arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all)
+        SCAN_MODE="all"
+        shift
+        ;;
+      --root)
+        if [[ -z "${2:-}" ]]; then
+          red "Error: --root requires a directory argument"
+          exit 1
+        fi
+        ROOT_DIR="$2"
+        shift 2
+        ;;
+      --max-depth)
+        if [[ -z "${2:-}" ]]; then
+          red "Error: --max-depth requires a numeric argument"
+          exit 1
+        fi
+        if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+          red "Error: --max-depth must be a positive integer"
+          exit 1
+        fi
+        MAX_DEPTH="$2"
+        shift 2
+        ;;
+      --jobs|-j)
+        if [[ -z "${2:-}" ]]; then
+          red "Error: --jobs requires a numeric argument"
+          exit 1
+        fi
+        if ! [[ "$2" =~ ^[0-9]+$ ]] || [[ "$2" -eq 0 ]]; then
+          red "Error: --jobs must be a positive integer"
+          exit 1
+        fi
+        PARALLEL_JOBS="$2"
+        shift 2
+        ;;
+      --no-prune)
+        PRUNE_MODE="none"
+        shift
+        ;;
+      --prune-each)
+        PRUNE_MODE="each"
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=true
+        shift
+        ;;
+      --help|-h)
+        show_help
+        exit 0
+        ;;
+      *)
+        red "Error: Unknown option: $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+  
+  # Acquire lock to prevent concurrent execution
+  acquire_lock
+  
+  # Validate dependencies
+  validate_dependencies
+  
+  log "Starting docker-compose-update"
+  log "Parallel jobs: $PARALLEL_JOBS"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    yellow "DRY-RUN MODE: Commands will be printed but not executed"
+  fi
+  
+  # Update projects based on scan mode
+  if [[ "$SCAN_MODE" == "all" ]]; then
+    update_all_projects
+  else
+    update_running_projects
+  fi
+  
+  # Final prune if requested
+  if [[ "$PRUNE_MODE" == "end" ]]; then
+    prune_docker
+  fi
+  
+  green "=========================================="
+  log "docker-compose-update completed successfully"
+  green "=========================================="
+}
+
+main "$@"
