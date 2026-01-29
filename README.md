@@ -12,11 +12,14 @@ A robust Debian/Ubuntu-friendly tool to update Docker Compose stacks.
 # Update only currently running compose projects (default)
 ./packages/docker-compose-update/docker-compose-update
 
-# Update all compose projects under /opt (with --all)
+# Update all compose projects in home directory (with --all)
 ./packages/docker-compose-update/docker-compose-update --all
 
 # Update all projects under a custom root directory
 ./packages/docker-compose-update/docker-compose-update --all --root /srv --max-depth 3
+
+# Update with specific number of parallel jobs
+./packages/docker-compose-update/docker-compose-update --all -j 4
 
 # Dry run to see what would be executed
 ./packages/docker-compose-update/docker-compose-update --all --dry-run
@@ -28,8 +31,9 @@ A robust Debian/Ubuntu-friendly tool to update Docker Compose stacks.
 **Options:**
 
 - `--all` - Scan for all compose files and update all projects (default: update only running)
-- `--root DIR` - Root directory to scan for compose files (default: /opt, only used with --all)
+- `--root DIR` - Root directory to scan for compose files (default: user's home directory, only used with --all)
 - `--max-depth N` - Maximum directory depth to scan (default: 6, only used with --all)
+- `--jobs N, -j N` - Number of parallel jobs (default: CPU count)
 - `--no-prune` - Skip Docker system prune (default: prune once at the end)
 - `--prune-each` - Run Docker system prune after each project update
 - `--dry-run` - Print commands without executing them
@@ -44,6 +48,11 @@ A robust Debian/Ubuntu-friendly tool to update Docker Compose stacks.
 *--all mode:*
 - Scans for compose files (docker-compose.yml, compose.yml, etc.) under the specified root
 - Updates all found projects
+
+*Parallel execution:*
+- By default, updates projects in parallel using the number of CPUs available
+- Use `--jobs N` or `-j N` to specify a custom number of parallel jobs
+- Each project update runs independently in parallel for faster execution
 
 *For each project:*
 1. Changes to the project's working directory (to respect local overrides, .env, etc.)

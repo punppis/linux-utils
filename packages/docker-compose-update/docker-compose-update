@@ -19,13 +19,14 @@ set -euo pipefail
 # ==============================================================================
 
 # Default configuration
-DEFAULT_ROOT="/opt"
+DEFAULT_ROOT="${HOME:-/opt}"  # Use user's home directory, fallback to /opt
 DEFAULT_MAX_DEPTH=6
 SCAN_MODE="running"  # "running" or "all"
 DRY_RUN=false
 PRUNE_MODE="end"     # "none", "end", or "each"
 ROOT_DIR="$DEFAULT_ROOT"
 MAX_DEPTH="$DEFAULT_MAX_DEPTH"
+PARALLEL_JOBS=$(nproc 2>/dev/null || echo "1")  # Number of parallel jobs based on CPU count
 
 # Compose file patterns to search for
 COMPOSE_FILE_PATTERNS=("docker-compose.yml" "docker-compose.yaml" "compose.yml" "compose.yaml")
@@ -35,7 +36,7 @@ COMPOSE_FILE_PATTERNS=("docker-compose.yml" "docker-compose.yaml" "compose.yml" 
 # ==============================================================================
 
 red() {
-  if [[ -t 1 ]]; then
+  if [[ -t 2 ]]; then
     echo -e "\033[31m$*\033[0m" >&2
   else
     echo "$*" >&2
@@ -74,10 +75,12 @@ OPTIONS:
                         (default: update only currently running projects)
     
     --root DIR          Root directory to scan for compose files
-                        (default: /opt, only used with --all)
+                        (default: user's home directory, only used with --all)
     
     --max-depth N       Maximum directory depth to scan
                         (default: 6, only used with --all)
+    
+    --jobs N, -j N      Number of parallel jobs (default: CPU count)
     
     --no-prune          Skip Docker system prune
                         (default: prune once at the end)
@@ -150,6 +153,10 @@ validate_dependencies() {
 # CORE FUNCTIONS
 # ==============================================================================
 
+# Execute a command or print it in dry-run mode
+# Args: command string to execute
+# In dry-run mode, prints the command with [DRY-RUN] prefix
+# In normal mode, logs and executes the command using eval
 execute_or_print() {
   local cmd="$*"
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -236,10 +243,42 @@ update_project() {
   return 0
 }
 
+# Helper function to update projects in parallel
+# Args: list of directories (one per line)
+update_projects_parallel() {
+  local dirs="$1"
+  local job_count="${2:-1}"
+  
+  if [[ -z "$dirs" ]]; then
+    return 0
+  fi
+  
+  # Count projects
+  local count
+  count=$(echo "$dirs" | grep -c .)
+  
+  if [[ $count -eq 0 ]]; then
+    return 0
+  fi
+  
+  log "Updating $count project(s) with $job_count parallel job(s)..."
+  
+  # Export functions and variables needed by subshells
+  export -f update_project execute_or_print log green yellow red prune_docker
+  export DRY_RUN PRUNE_MODE
+  
+  # Use xargs for parallel execution
+  echo "$dirs" | xargs -I {} -P "$job_count" bash -c 'update_project "{}"'
+  
+  return 0
+}
+
 prune_docker() {
   green "=========================================="
   log "Running Docker system prune..."
   green "=========================================="
+  # Note: This removes ALL unused images (not just dangling), volumes, and build cache
+  # This is intentionally aggressive to free up disk space after updates
   execute_or_print "docker system prune -a --volumes --force"
 }
 
@@ -251,13 +290,14 @@ update_running_projects() {
     return 0
   fi
   
-  local count=0
-  while IFS= read -r dir; do
-    if [[ -n "$dir" ]]; then
-      update_project "$dir"
-      count=$((count + 1))
-    fi
-  done <<< "$dirs"
+  # Use parallel execution
+  if ! update_projects_parallel "$dirs" "$PARALLEL_JOBS"; then
+    red "Error: Failed to update projects"
+    return 1
+  fi
+  
+  local count
+  count=$(echo "$dirs" | grep -c .)
   
   if [[ $count -eq 0 ]]; then
     log "No projects updated"
@@ -279,34 +319,23 @@ update_all_projects() {
     return 0
   fi
   
-  local count=0
-  local dirs_seen=()
+  # Extract unique directories from compose files
+  local unique_dirs
+  unique_dirs=$(echo "$compose_files" | xargs -n1 dirname | sort -u)
   
-  while IFS= read -r compose_file; do
-    if [[ -z "$compose_file" ]]; then
-      continue
-    fi
-    
-    local project_dir
-    project_dir=$(dirname "$compose_file")
-    
-    # Skip if we've already processed this directory
-    local already_seen=false
-    for seen_dir in "${dirs_seen[@]}"; do
-      if [[ "$seen_dir" == "$project_dir" ]]; then
-        already_seen=true
-        break
-      fi
-    done
-    
-    if [[ "$already_seen" == "true" ]]; then
-      continue
-    fi
-    
-    dirs_seen+=("$project_dir")
-    update_project "$project_dir"
-    count=$((count + 1))
-  done <<< "$compose_files"
+  if [[ -z "$unique_dirs" ]]; then
+    log "No projects to update"
+    return 0
+  fi
+  
+  # Use parallel execution
+  if ! update_projects_parallel "$unique_dirs" "$PARALLEL_JOBS"; then
+    red "Error: Failed to update projects"
+    return 1
+  fi
+  
+  local count
+  count=$(echo "$unique_dirs" | grep -c .)
   
   if [[ $count -eq 0 ]]; then
     log "No projects updated"
@@ -347,6 +376,18 @@ main() {
         MAX_DEPTH="$2"
         shift 2
         ;;
+      --jobs|-j)
+        if [[ -z "${2:-}" ]]; then
+          red "Error: --jobs requires a numeric argument"
+          exit 1
+        fi
+        if ! [[ "$2" =~ ^[0-9]+$ ]] || [[ "$2" -eq 0 ]]; then
+          red "Error: --jobs must be a positive integer"
+          exit 1
+        fi
+        PARALLEL_JOBS="$2"
+        shift 2
+        ;;
       --no-prune)
         PRUNE_MODE="none"
         shift
@@ -376,6 +417,7 @@ main() {
   validate_dependencies
   
   log "Starting docker-compose-update"
+  log "Parallel jobs: $PARALLEL_JOBS"
   if [[ "$DRY_RUN" == "true" ]]; then
     yellow "DRY-RUN MODE: Commands will be printed but not executed"
   fi
