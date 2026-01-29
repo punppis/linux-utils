@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+echo "Hello from my package docker-compose-update!"
+
+exit 0
