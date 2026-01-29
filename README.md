@@ -18,7 +18,7 @@ echo "My Tool" | ./create-package
 
 **Behavior:**
 
-- Creates a directory with the sanitized package name
+- Creates a directory with the sanitized package name under `./packages/`
 - Generates an executable bash script inside the directory with the same name
 - The generated script includes a shebang, error handling, and a simple hello message
 
@@ -36,18 +36,19 @@ Package names are automatically sanitized:
 **Examples:**
 
 ```bash
-# Creates: my-tool/my-tool
+# Creates: packages/my-tool/my-tool
 ./create-package "My Tool"
 
-# Creates: my-repo/my-repo
+# Creates: packages/my-repo/my-repo
 ./create-package "my repo"
 
-# Creates: my-repo2/my-repo2
+# Creates: packages/my-repo2/my-repo2
 ./create-package "my  ^ repo2"
-# Creates: hello-world/hello-world
+
+# Creates: packages/hello-world/hello-world
 echo "Hello_World" | ./create-package
 
-# Creates: test123/test123
+# Creates: packages/test123/test123
 ./create-package "test123"
 ```
 
