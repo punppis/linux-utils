@@ -22,14 +22,9 @@ green() {
 sanitize() {
   local input="$*"
 
-  # If no args, read from stdin (piped)
-  if [[ -z "$input" && ! -t 0 ]]; then
-    input="$(cat)"
-  fi
-
   printf '%s' "$input" \
     | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[[:space:]]+/-/g' \
+    | sed -E 's/[[:space:]_]+/-/g' \
     | sed -E 's/[^a-z0-9-]+//g' \
     | sed -E 's/-+/-/g; s/^-+//; s/-+$//'
 }
