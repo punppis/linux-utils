@@ -38,12 +38,14 @@ fi
 # Sanitize the package name:
 # 1. Convert to lowercase
 # 2. Replace any run of whitespace characters with a single dash
+# 2. Replace spaces and underscores with dashes
 # 3. Remove any characters that are not [a-z0-9-]
 # 4. Collapse multiple consecutive dashes into one
 # 5. Remove leading/trailing dashes
 sanitized=$(echo "$package_name" | \
   tr '[:upper:]' '[:lower:]' | \
   sed 's/[[:space:]]\+/-/g' | \
+  tr ' _' '-' | \
   sed 's/[^a-z0-9-]//g' | \
   sed 's/-\+/-/g' | \
   sed 's/^-//;s/-$//')
@@ -84,3 +86,4 @@ chmod +x "$script_path"
 
 green "✓ Created package '$sanitized'"
 echo "  Script: $script_path"
+
