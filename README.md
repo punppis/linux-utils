@@ -26,6 +26,8 @@ echo "My Tool" | ./create-package
 
 Package names are automatically sanitized:
 - Converted to lowercase
+- Any run of whitespace characters (spaces, tabs, etc.) is replaced with a single dash
+- All other special characters are removed (only `[a-z0-9-]` are retained)
 - Spaces and underscores are replaced with dashes
 - Only `[a-z0-9-]` characters are retained (letters, numbers, dashes)
 - Multiple consecutive dashes are collapsed into one
@@ -37,6 +39,11 @@ Package names are automatically sanitized:
 # Creates: my-tool/my-tool
 ./create-package "My Tool"
 
+# Creates: my-repo/my-repo
+./create-package "my repo"
+
+# Creates: my-repo2/my-repo2
+./create-package "my  ^ repo2"
 # Creates: hello-world/hello-world
 echo "Hello_World" | ./create-package
 
