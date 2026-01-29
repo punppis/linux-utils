@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # create-package: Create a new package directory with a bash script template
@@ -61,13 +61,16 @@ if [[ -d "$sanitized" ]]; then
   exit 1
 fi
 
-# Create the package directory
-mkdir -p "$sanitized"
+# Create the package directory (using mkdir without -p to avoid race condition)
+if ! mkdir "$sanitized" 2>/dev/null; then
+  red "Error: Failed to create directory '$sanitized' (may have been created concurrently)"
+  exit 1
+fi
 
 # Create the package script
 script_path="$sanitized/$sanitized"
 cat > "$script_path" <<EOF
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # $sanitized: Package script
@@ -81,3 +84,4 @@ chmod +x "$script_path"
 
 green "✓ Created package '$sanitized'"
 echo "  Script: $script_path"
+
