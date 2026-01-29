@@ -84,4 +84,3 @@ chmod +x "$script_path"
 
 green "✓ Created package '$sanitized'"
 echo "  Script: $script_path"
-
