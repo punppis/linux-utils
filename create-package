@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+OUTPUT_FOLDER=./packages
+
 # create-package: Create a new package directory with a bash script template
 # Usage: ./create-package <package-name>
 #        echo "<package-name>" | ./create-package
