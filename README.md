@@ -65,11 +65,17 @@ A robust Debian/Ubuntu-friendly tool to update Docker Compose stacks.
 - With `--prune-each`: prune after each project
 - With `--no-prune`: skip pruning entirely
 
+*Concurrency protection:*
+- Uses a lock file (`/var/lock/docker-compose-update.lock` or `/tmp/docker-compose-update.lock`)
+- Prevents multiple instances from running simultaneously
+- Automatically released on script completion or interruption
+
 **Requirements:**
 
 - Docker Engine with docker compose plugin
 - Debian/Ubuntu/Raspberry Pi environment
 - Sufficient permissions to run docker commands (may require sudo)
+- `flock` command (usually pre-installed on Linux systems)
 
 ### create-package
 

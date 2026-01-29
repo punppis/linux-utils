@@ -28,6 +28,14 @@ ROOT_DIR="$DEFAULT_ROOT"
 MAX_DEPTH="$DEFAULT_MAX_DEPTH"
 PARALLEL_JOBS=$(nproc 2>/dev/null || echo "1")  # Number of parallel jobs based on CPU count
 
+# Lock file to prevent concurrent execution
+LOCK_FILE="/var/lock/docker-compose-update.lock"
+# Fallback to /tmp if /var/lock is not writable
+if [[ ! -w "$(dirname "$LOCK_FILE")" ]]; then
+  LOCK_FILE="/tmp/docker-compose-update.lock"
+fi
+LOCK_FD=200
+
 # Compose file patterns to search for
 COMPOSE_FILE_PATTERNS=("docker-compose.yml" "docker-compose.yaml" "compose.yml" "compose.yaml")
 
@@ -62,6 +70,50 @@ yellow() {
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
+
+# ==============================================================================
+# LOCK MANAGEMENT
+# ==============================================================================
+
+acquire_lock() {
+  # Try to acquire exclusive lock
+  # Use flock for atomic lock acquisition
+  
+  # Open lock file on the specified file descriptor
+  eval "exec $LOCK_FD>\"$LOCK_FILE\"" 2>/dev/null || {
+    red "Error: Cannot create lock file: $LOCK_FILE"
+    red "Please check permissions or run with appropriate privileges"
+    exit 1
+  }
+  
+  if ! flock -n $LOCK_FD 2>/dev/null; then
+    red "Error: Another instance of docker-compose-update is already running"
+    red "Lock file: $LOCK_FILE"
+    red "If you're sure no other instance is running, remove the lock file manually"
+    exit 1
+  fi
+  
+  # Write PID to lock file for debugging
+  eval "echo \$\$ >&$LOCK_FD"
+  
+  log "Acquired lock: $LOCK_FILE"
+}
+
+release_lock() {
+  if [[ -n "${LOCK_FD:-}" ]]; then
+    flock -u $LOCK_FD 2>/dev/null || true
+    eval "exec $LOCK_FD>&-" 2>/dev/null || true
+    rm -f "$LOCK_FILE" 2>/dev/null || true
+    log "Released lock"
+  fi
+}
+
+# Ensure lock is released on exit
+trap release_lock EXIT INT TERM
+
+# ==============================================================================
+# HELP AND USAGE
+# ==============================================================================
 
 show_help() {
   cat <<EOF
@@ -116,8 +168,11 @@ EXAMPLES:
     # Update only running compose projects
     docker-compose-update
     
-    # Update all compose projects under /opt
+    # Update all compose projects in home directory
     docker-compose-update --all
+    
+    # Update all projects under /opt
+    docker-compose-update --all --root /opt
     
     # Update all projects under /srv with max depth 3
     docker-compose-update --all --root /srv --max-depth 3
@@ -222,18 +277,18 @@ update_project() {
   green "=========================================="
   
   # Change to project directory to respect local context (overrides, .env, etc.)
+  # Use trap to ensure popd runs even if commands fail
   pushd "$project_dir" > /dev/null || {
     red "Error: Cannot change to directory: $project_dir"
     return 1
   }
+  trap 'popd > /dev/null' RETURN
   
   # Pull latest images
   execute_or_print "docker compose pull"
   
   # Recreate containers with new images
   execute_or_print "docker compose up -d --force-recreate --remove-orphans"
-  
-  popd > /dev/null
   
   # Prune after this project if requested
   if [[ "$PRUNE_MODE" == "each" ]]; then
@@ -267,10 +322,22 @@ update_projects_parallel() {
   export -f update_project execute_or_print log green yellow red prune_docker
   export DRY_RUN PRUNE_MODE
   
-  # Use xargs for parallel execution
-  echo "$dirs" | xargs -I {} -P "$job_count" bash -c 'update_project "{}"'
+  # Use parallel execution with proper path handling
+  # Create a temporary file with null-delimited paths for safety
+  local tmp_file
+  tmp_file=$(mktemp)
   
-  return 0
+  # Write paths with null delimiter
+  while IFS= read -r dir; do
+    printf '%s\0' "$dir"
+  done <<< "$dirs" > "$tmp_file"
+  
+  # Use xargs with null delimiter to handle spaces and special characters
+  xargs -0 -P "$job_count" -I {} bash -c 'update_project "$1"' _ {} < "$tmp_file"
+  local result=$?
+  
+  rm -f "$tmp_file"
+  return $result
 }
 
 prune_docker() {
@@ -412,6 +479,9 @@ main() {
         ;;
     esac
   done
+  
+  # Acquire lock to prevent concurrent execution
+  acquire_lock
   
   # Validate dependencies
   validate_dependencies
