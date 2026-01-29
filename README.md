@@ -27,8 +27,7 @@ echo "My Tool" | ./create-package
 Package names are automatically sanitized:
 - Converted to lowercase
 - Any run of whitespace characters (spaces, tabs, etc.) is replaced with a single dash
-- All special characters are removed
-- Only `[a-z0-9-]` characters are retained (letters, numbers, dashes)
+- All other special characters are removed (only `[a-z0-9-]` are retained)
 - Multiple consecutive dashes are collapsed into one
 - Leading and trailing dashes are removed
 
