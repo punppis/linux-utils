@@ -26,7 +26,7 @@ DRY_RUN=false
 PRUNE_MODE="end"     # "none", "end", or "each"
 ROOT_DIR="$DEFAULT_ROOT"
 MAX_DEPTH="$DEFAULT_MAX_DEPTH"
-PARALLEL_JOBS=$(nproc 2>/dev/null || echo "1")  # Number of parallel jobs based on CPU count
+PARALLEL_JOBS=1 #$(nproc 2>/dev/null || echo "1")  # Number of parallel jobs based on CPU count
 
 # Lock file to prevent concurrent execution
 LOCK_FILE="/var/lock/docker-compose-update.lock"
