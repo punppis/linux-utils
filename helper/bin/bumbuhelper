@@ -1,0 +1,1596 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- /home/punppis/linux-utils/helper/src/functions/00_env.sh ---
+# Environment and constants
+
+PROG_NAME="bumbuhelper"
+PROG_ALIASES=("bumbuhelper" "bh" "bhelper" "bhelp" "helper")
+
+# --- /home/punppis/linux-utils/helper/src/functions/01_utils.sh ---
+# Shared utilities
+
+is_tty() {
+  [ -t 2 ]
+}
+
+color_enabled() {
+  if [ -n "${NO_COLOR:-}" ]; then
+    return 1
+  fi
+  if [ "${TERM:-dumb}" = "dumb" ]; then
+    return 1
+  fi
+  is_tty
+}
+
+color_reset() { printf '\033[0m'; }
+color_red() { printf '\033[31m'; }
+color_green() { printf '\033[32m'; }
+color_yellow() { printf '\033[33m'; }
+color_blue() { printf '\033[34m'; }
+color_magenta() { printf '\033[35m'; }
+color_cyan() { printf '\033[36m'; }
+
+colorize() {
+  local color="$1"
+  shift
+  if color_enabled; then
+    printf '%s%s%s' "$("color_${color}")" "$*" "$(color_reset)"
+  else
+    printf '%s' "$*"
+  fi
+}
+
+log() {
+  colorize cyan "$*" >&2
+  printf '\n' >&2
+}
+
+log_warn() {
+  colorize yellow "$*" >&2
+  printf '\n' >&2
+}
+
+log_error() {
+  colorize red "$*" >&2
+  printf '\n' >&2
+}
+
+die() {
+  log_error "Error: $*"
+  exit 1
+}
+
+confirm_run() {
+  local cmd_display="$*"
+  log "About to run: $cmd_display"
+
+  if [ -t 0 ] && [ -t 1 ]; then
+    local reply=""
+    printf 'Proceed? [Y/n] ' >&2
+    read -r reply
+    case "$reply" in
+      n|N|no|NO)
+        log_warn "Canceled"
+        return 1
+        ;;
+    esac
+  fi
+
+  "$@"
+}
+
+is_alias_name() {
+  local name="$1"
+  local a
+  for a in "${PROG_ALIASES[@]}"; do
+    if [ "$name" = "$a" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+read_items() {
+  local -n __out="$1"
+  local separators="$2"
+  shift 2
+
+  local data=""
+  if [ ! -t 0 ]; then
+    data="$(cat)"
+  fi
+
+  if [ "$#" -gt 0 ]; then
+    if [ -n "$data" ]; then
+      data+=$'\n'
+    fi
+    data+="$*"
+  fi
+
+  data="$(printf "%s" "$data" | tr "$separators" '\n')"
+  mapfile -t __out < <(
+    printf "%s\n" "$data" \
+      | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+      | sed '/^$/d'
+  )
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/10_help.sh ---
+# Help output
+# @cmd help Show this help text.
+
+show_help() {
+  cat <<'EOF'
+bumbuhelper ✨ — tiny toolbox with docker-compose vibes
+
+Usage:
+  bumbuhelper <group> <command> [options]
+  bumbuhelper <command> [options]
+
+Aliases:
+  bumbuhelper, bh, bhelper, bhelp, helper
+
+Groups:
+  utils        create_array, commands, help, install, autocomplete
+  interactive  choose
+  fs           path, file
+  ssh          ssh-circlejerk, ssh-copy-id, ssh-command
+  docker       folders, update, update_all
+  data         base64, compress, decompress, decrypt
+  compress     compress, decompress
+  transform    encrypt, decrypt, base64, hash
+
+Group commands:
+  fs path <get_current_script|get_path>
+  fs file <rsync|reset_permissions>
+  ssh <ssh-circlejerk|ssh-copy-id|ssh-command>
+  docker <folders|update|update_all>
+  data <base64|compress|decompress|decrypt>
+  compress <compress|decompress>
+  transform <encrypt|decrypt|base64|hash>
+
+Direct commands (still supported):
+  create_array, get_current_script, get_path, compress, decompress,
+  encrypt, decrypt, base64, hash, rsync, reset_permissions,
+  ssh-circlejerk, ssh-copy-id, ssh-command
+
+Examples:
+  cat rows.txt | helper utils create_array
+  cat entries.csv | helper utils create_array --separators ","
+
+  helper ssh ssh-circlejerk host1 host2 host3
+  cat hosts.txt | helper ssh ssh-circlejerk
+  helper ssh ssh-circlejerk < hosts.somefile
+
+  helper ssh ssh-copy-id host1 host2 host3
+  helper ssh ssh-command "echo hello, im $(hostname)" "date" host1 host2 host3
+
+  helper docker folders all
+  helper docker update
+  helper docker update_all
+
+  helper fs path get_current_script
+  helper fs file rsync /data host1:/data
+
+  helper compress compress ./data
+  helper compress decompress data.tar.gz --output ./out
+  helper transform encrypt secrets.txt --password "hunter2"
+  helper transform decrypt secrets.txt.enc --password "hunter2"
+  printf 'hello' | helper transform base64
+  printf 'hello' | helper transform hash
+  printf 'hello' | helper data base64
+
+  bh choose a b c d:default
+  bh choose --multi a b c d
+  bh reset_permissions ./data --files 644 --dirs 755
+  bh commands
+EOF
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/11_commands.sh ---
+# List commands
+# @cmd commands List available commands with descriptions.
+
+list_commands() {
+  local script
+  script="$(get_current_script)"
+
+  local entries
+  entries="$(grep -E '^# @cmd ' "$script" || true)"
+
+  if [ -z "$entries" ]; then
+    die "No command metadata found"
+  fi
+
+  declare -A descs
+  while IFS= read -r line; do
+    line="${line#\# @cmd }"
+    local cmd="${line%% *}"
+    local desc="${line#* }"
+    if [ "$cmd" = "$desc" ]; then
+      desc=""
+    fi
+    descs["$cmd"]="$desc"
+  done <<<"$entries"
+
+  local -a groups=(
+    "utils"
+    "interactive"
+    "fs"
+    "ssh"
+    "docker"
+    "data"
+    "compress"
+    "transform"
+  )
+
+  declare -A group_cmds
+  group_cmds[utils]="create_array commands help install autocomplete"
+  group_cmds[interactive]="choose"
+  group_cmds[fs]="path file"
+  group_cmds[ssh]="ssh-circlejerk ssh-copy-id ssh-command"
+  group_cmds[docker]="docker"
+  group_cmds[data]="base64 compress decompress decrypt"
+  group_cmds[compress]="compress decompress"
+  group_cmds[transform]="encrypt decrypt base64 hash"
+
+  local group
+  for group in "${groups[@]}"; do
+    printf '%s\n' "[$group]"
+    printf '%-22s %s\n' "COMMAND" "DESCRIPTION"
+    printf '%-22s %s\n' "-------" "-----------"
+    local cmd
+    for cmd in ${group_cmds[$group]}; do
+      printf '%-22s %s\n' "$cmd" "${descs[$cmd]}"
+    done
+    printf '\n'
+  done
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/15_path.sh ---
+# Path helpers
+# @cmd get_current_script Print the current script path.
+
+get_current_script() {
+  local src="${BASH_SOURCE[0]}"
+
+  if command -v readlink >/dev/null 2>&1; then
+    local resolved
+    resolved="$(readlink -f "$src" 2>/dev/null || true)"
+    if [ -n "$resolved" ]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+
+  if [[ "$src" != /* ]]; then
+    src="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+  fi
+
+  printf '%s\n' "$src"
+}
+
+# @cmd get_path Print directory path(s) for input.
+get_path() {
+  local -a items=()
+
+  if [ ! -t 0 ]; then
+    mapfile -t items < <(sed '/^$/d')
+  else
+    items=("$@")
+  fi
+
+  [ "${#items[@]}" -eq 0 ] && die "No input provided."
+
+  local item
+  for item in "${items[@]}"; do
+    if command -v dirname >/dev/null 2>&1; then
+      dirname -- "$item"
+    else
+      printf '%s\n' "${item%/*}"
+    fi
+  done
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/20_create_array.sh ---
+# Create bash array from input
+# @cmd create_array Create a bash array from input.
+
+create_array() {
+  local separators=$'\n'
+  local name=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --separators)
+        separators="$2"
+        shift 2
+        ;;
+      --name)
+        name="$2"
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  local -a items=()
+  read_items items "$separators" "$@"
+
+  [ "${#items[@]}" -eq 0 ] && die "No input provided."
+
+  local -a out=()
+  local item
+  for item in "${items[@]}"; do
+    out+=("$(printf '%q' "$item")")
+  done
+
+  if [ -n "$name" ]; then
+    printf '%s=(' "$name"
+  else
+    printf '('
+  fi
+
+  printf '%s ' "${out[@]}"
+  printf ')\n'
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/30_ssh_copy_id.sh ---
+# ssh-copy-id for multiple hosts
+# @cmd ssh-copy-id Run ssh-copy-id on multiple hosts.
+
+ssh_copy_id_multi() {
+  local -a hosts=()
+  read_items hosts ", " "$@"
+
+  [ "${#hosts[@]}" -eq 0 ] && die "No hosts provided."
+
+  local h
+  for h in "${hosts[@]}"; do
+    log "ssh-copy-id -> $h"
+    ssh-copy-id -o StrictHostKeyChecking=accept-new "$h"
+  done
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/31_ssh_circlejerk.sh ---
+# ssh-copy-id between all hosts
+# @cmd ssh-circlejerk Copy SSH keys between all hosts.
+
+ssh_circlejerk() {
+  local dry_run=0
+  if [ "${1:-}" = "--dry-run" ]; then
+    dry_run=1
+    shift
+  fi
+
+  local -a hosts=()
+  read_items hosts ", " "$@"
+
+  [ "${#hosts[@]}" -lt 2 ] && die "Need at least 2 hosts."
+
+  local src dst cmd
+  for src in "${hosts[@]}"; do
+    for dst in "${hosts[@]}"; do
+      [ "$src" = "$dst" ] && continue
+      cmd="ssh-copy-id -o StrictHostKeyChecking=accept-new $dst"
+      if [ "$dry_run" -eq 1 ]; then
+        log "[dry-run] ssh $src \"$cmd\""
+      else
+        log "[$src -> $dst]"
+        ssh "$src" "$cmd"
+      fi
+    done
+  done
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/32_ssh_command.sh ---
+# Run one or more commands on multiple hosts
+# @cmd ssh-command Run commands on multiple hosts.
+
+ssh_command_multi() {
+  local -a commands=()
+  local -a hosts=()
+
+  local found_delim=0
+  local arg
+  for arg in "$@"; do
+    if [ "$arg" = "--" ]; then
+      found_delim=1
+      continue
+    fi
+    if [ "$found_delim" -eq 0 ]; then
+      commands+=("$arg")
+    else
+      hosts+=("$arg")
+    fi
+  done
+
+  if [ "$found_delim" -eq 0 ]; then
+    if [ ! -t 0 ]; then
+      read_items hosts ", "
+      commands=("$@")
+    else
+      if [ "$#" -lt 3 ]; then
+        die "Usage: ssh-command <cmd1> <cmd2> <host...> (or use --)"
+      fi
+      commands=("${@:1:2}")
+      hosts=("${@:3}")
+    fi
+  fi
+
+  [ "${#commands[@]}" -eq 0 ] && die "No commands provided."
+  [ "${#hosts[@]}" -eq 0 ] && die "No hosts provided."
+
+  local h c
+  for h in "${hosts[@]}"; do
+    for c in "${commands[@]}"; do
+      log "[$h] $c"
+      ssh "$h" "$c"
+    done
+  done
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/40_docker_folders.sh ---
+# Docker compose folders
+# @cmd docker List compose project folders (docker folders all).
+
+docker_folders_all() {
+  command -v docker >/dev/null 2>&1 || die "docker not found"
+
+  local -a ids=()
+  mapfile -t ids < <(docker ps -q)
+
+  if [ "${#ids[@]}" -eq 0 ]; then
+    log "No running containers."
+    return 0
+  fi
+
+  local id
+  local -a folders=()
+  for id in "${ids[@]}"; do
+    local wdir
+    wdir="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$id" 2>/dev/null || true)"
+    if [ -n "$wdir" ] && [ "$wdir" != "<no value>" ]; then
+      folders+=("$wdir")
+    else
+      local name
+      name="$(docker inspect -f '{{ .Name }}' "$id" 2>/dev/null | sed 's#^/##')"
+      log "non-compose: $name"
+    fi
+  done
+
+  if [ "${#folders[@]}" -gt 0 ]; then
+    printf "%s\n" "${folders[@]}" | sort -u
+  fi
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/41_docker_update.sh ---
+# Docker update helpers
+
+# Update docker compose in current directory
+# @cmd docker Update docker compose projects (folders/update/update_all).
+
+docker_update() {
+  confirm_run docker compose up -d --pull always --remove-orphans --force-recreate
+}
+
+docker_update_all() {
+  local -a folders=()
+  mapfile -t folders < <(docker_folders_all)
+
+  if [ "${#folders[@]}" -eq 0 ]; then
+    log "No docker compose folders found."
+    return 0
+  fi
+
+  local -a selected=()
+  mapfile -t selected < <(choose --multi "${folders[@]}")
+
+  if [ "${#selected[@]}" -eq 0 ]; then
+    log_warn "No folders selected."
+    return 0
+  fi
+
+  local path
+  for path in "${selected[@]}"; do
+    confirm_run bash -c 'cd "$1" && docker compose up -d --pull always --remove-orphans --force-recreate' _ "$path"
+  done
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/42_rsync.sh ---
+# rsync helper
+# @cmd rsync Rsync sources to destination with progress.
+
+rsync_helper() {
+  [ "$#" -lt 2 ] && die "Usage: rsync <src...> <dest>"
+
+  local dest="${!#}"
+  local -a sources=("${@:1:$#-1}")
+
+  confirm_run rsync -a --info=progress2 "${sources[@]}" "$dest"
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/43_choose.sh ---
+# Choose helper
+# @cmd choose Interactively choose an option.
+
+choose() {
+  local default=""
+  local multi=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --default|-d)
+        default="$2"
+        shift 2
+        ;;
+      --multi|-m)
+        multi=1
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  local -a items=()
+
+  if [ "$#" -gt 0 ]; then
+    items=("$@")
+  else
+    mapfile -t items < <(sed '/^$/d')
+  fi
+
+  if [ "${#items[@]}" -eq 0 ]; then
+    die "No options provided"
+  fi
+
+  local -a clean_items=()
+  local item
+  for item in "${items[@]}"; do
+    if [[ "$item" == *":default" ]]; then
+      local stripped="${item%:default}"
+      if [ -z "$default" ]; then
+        default="$stripped"
+      fi
+      clean_items+=("$stripped")
+    else
+      clean_items+=("$item")
+    fi
+  done
+
+  items=("${clean_items[@]}")
+
+  if [ -z "$default" ]; then
+    default="${items[0]}"
+  fi
+
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    if [ -n "$default" ]; then
+      printf '%s\n' "$default"
+      return 0
+    fi
+    if [ "$multi" -eq 1 ]; then
+      printf '%s\n' "${items[@]}"
+      return 0
+    fi
+    die "No TTY available for selection"
+  fi
+
+  log "Choose an option:"
+  local i
+  for i in "${!items[@]}"; do
+    local idx=$((i + 1))
+    if [ "${items[$i]}" = "$default" ]; then
+      printf '  %d) %s (default)\n' "$idx" "${items[$i]}" >&2
+    else
+      printf '  %d) %s\n' "$idx" "${items[$i]}" >&2
+    fi
+  done
+
+  if [ "$multi" -eq 1 ]; then
+    printf 'Select one or more (e.g. 1 3 or 1,3) [1-%d] (default: %s): ' "${#items[@]}" "$default" >&2
+  else
+    printf 'Select [1-%d] (default: %s): ' "${#items[@]}" "$default" >&2
+  fi
+
+  local selection=""
+  read -r selection
+
+  if [ -z "$selection" ]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+
+  if [ "$multi" -eq 1 ]; then
+    selection="$(printf '%s' "$selection" | tr ',' ' ')"
+    local idx
+    for idx in $selection; do
+      if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+        die "Invalid selection"
+      fi
+      if [ "$idx" -lt 1 ] || [ "$idx" -gt "${#items[@]}" ]; then
+        die "Selection out of range"
+      fi
+      printf '%s\n' "${items[$((idx - 1))]}"
+    done
+    return 0
+  fi
+
+  if ! [[ "$selection" =~ ^[0-9]+$ ]]; then
+    die "Invalid selection"
+  fi
+
+  if [ "$selection" -lt 1 ] || [ "$selection" -gt "${#items[@]}" ]; then
+    die "Selection out of range"
+  fi
+
+  printf '%s\n' "${items[$((selection - 1))]}"
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/44_permissions.sh ---
+# Reset default permissions for files and folders
+# @cmd reset_permissions Reset file/dir permissions (644/755).
+
+reset_permissions() {
+  local target="."
+  local file_mode="644"
+  local dir_mode="755"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --files)
+        file_mode="$2"
+        shift 2
+        ;;
+      --dirs)
+        dir_mode="$2"
+        shift 2
+        ;;
+      *)
+        target="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [ -e "$target" ] || die "Path not found: $target"
+
+  confirm_run find "$target" -type d -exec chmod "$dir_mode" {} +
+  confirm_run find "$target" -type f -exec chmod "$file_mode" {} +
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/45_archive_crypto.sh ---
+# Compression, encryption, and base64 helpers
+# @cmd compress Create a tar/tar.gz archive from a path.
+
+compress() {
+  local input=""
+  local output=""
+  local format="tar.gz"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output|-o)
+        output="$2"
+        shift 2
+        ;;
+      --format)
+        format="$2"
+        shift 2
+        ;;
+      *)
+        input="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [ -z "$input" ] && die "Usage: compress <path> [--output FILE] [--format tar.gz|tar]"
+  [ ! -e "$input" ] && die "Input not found: $input"
+
+  if [ -z "$output" ]; then
+    case "$format" in
+      tar) output="${input##*/}.tar" ;;
+      tar.gz|tgz) output="${input##*/}.tar.gz" ;;
+      *) die "Unsupported format: $format" ;;
+    esac
+  fi
+
+  local base_dir
+  base_dir="$(dirname "$input")"
+  local name
+  name="$(basename "$input")"
+
+  case "$format" in
+    tar)
+      tar -C "$base_dir" -cf "$output" "$name"
+      ;;
+    tar.gz|tgz)
+      tar -C "$base_dir" -czf "$output" "$name"
+      ;;
+    *)
+      die "Unsupported format: $format"
+      ;;
+  esac
+}
+
+# @cmd decompress Extract a tar/tar.gz archive.
+decompress() {
+  local archive=""
+  local output="."
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output|-o)
+        output="$2"
+        shift 2
+        ;;
+      *)
+        archive="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [ -z "$archive" ] && die "Usage: decompress <archive> [--output DIR]"
+  [ ! -f "$archive" ] && die "Archive not found: $archive"
+
+  mkdir -p "$output"
+
+  case "$archive" in
+    *.tar.gz|*.tgz)
+      tar -C "$output" -xzf "$archive"
+      ;;
+    *.tar)
+      tar -C "$output" -xf "$archive"
+      ;;
+    *)
+      die "Unsupported archive: $archive"
+      ;;
+  esac
+}
+
+# @cmd encrypt Encrypt a file with a password (OpenSSL).
+encrypt() {
+  local input=""
+  local output=""
+  local password="${BUMBUHELPER_PASSWORD:-}"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output|-o)
+        output="$2"
+        shift 2
+        ;;
+      --password|-p)
+        password="$2"
+        shift 2
+        ;;
+      *)
+        input="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [ -z "$password" ] && die "Missing password (use --password or BUMBUHELPER_PASSWORD)"
+
+  if [ -z "$input" ]; then
+    [ -z "$output" ] && die "Usage: encrypt <file> [--output FILE] --password PASS"
+    openssl enc -aes-256-cbc -salt -pbkdf2 -pass pass:"$password" -out "$output"
+    return
+  fi
+
+  [ ! -f "$input" ] && die "Input not found: $input"
+
+  if [ -z "$output" ]; then
+    output="$input.enc"
+  fi
+
+  openssl enc -aes-256-cbc -salt -pbkdf2 -pass pass:"$password" -in "$input" -out "$output"
+}
+
+# @cmd decrypt Decrypt a file with a password (OpenSSL).
+decrypt() {
+  local input=""
+  local output=""
+  local password="${BUMBUHELPER_PASSWORD:-}"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output|-o)
+        output="$2"
+        shift 2
+        ;;
+      --password|-p)
+        password="$2"
+        shift 2
+        ;;
+      *)
+        input="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [ -z "$password" ] && die "Missing password (use --password or BUMBUHELPER_PASSWORD)"
+
+  if [ -z "$input" ]; then
+    [ -z "$output" ] && die "Usage: decrypt <file> [--output FILE] --password PASS"
+    openssl enc -aes-256-cbc -d -pbkdf2 -pass pass:"$password" -out "$output"
+    return
+  fi
+
+  [ ! -f "$input" ] && die "Input not found: $input"
+
+  if [ -z "$output" ]; then
+    output="${input%.enc}"
+    if [ "$output" = "$input" ]; then
+      output="$input.dec"
+    fi
+  fi
+
+  openssl enc -aes-256-cbc -d -pbkdf2 -pass pass:"$password" -in "$input" -out "$output"
+}
+
+# @cmd base64 Encode/decode base64 (auto-detect by default).
+base64_cmd() {
+  local mode="auto"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --decode|-d)
+        mode="decode"
+        shift
+        ;;
+      --encode|-e)
+        mode="encode"
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  local input=""
+  if [ "$#" -gt 0 ] && [ -t 0 ]; then
+    input="$*"
+  else
+    input="$(cat)"
+  fi
+
+  if [ -z "$input" ]; then
+    return 0
+  fi
+
+  case "$mode" in
+    encode)
+      printf '%s' "$input" | base64
+      return
+      ;;
+    decode)
+      printf '%s' "$input" | base64 --decode
+      return
+      ;;
+  esac
+
+  local normalized
+  normalized="$(printf '%s' "$input" | tr -d '\n\r\t ')"
+  local len="${#normalized}"
+
+  if [[ "$normalized" =~ ^[A-Za-z0-9+/=]+$ ]] && [ $((len % 4)) -eq 0 ]; then
+    if printf '%s' "$normalized" | base64 --decode >/dev/null 2>&1; then
+      printf '%s' "$normalized" | base64 --decode
+      return
+    fi
+  fi
+
+  printf '%s' "$input" | base64
+}
+
+# @cmd hash Hash input or files (default: sha256).
+hash_cmd() {
+  local algo="sha256"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --algo|-a)
+        algo="$2"
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  local mode="stdin"
+  local input=""
+
+  if [ "$#" -gt 0 ] && [ -f "$1" ]; then
+    mode="file"
+    input="$1"
+  elif [ "$#" -gt 0 ] && [ -t 0 ]; then
+    mode="text"
+    input="$*"
+  else
+    input="$(cat)"
+  fi
+
+  [ -z "$input" ] && die "No input provided."
+
+  if command -v openssl >/dev/null 2>&1; then
+    if [ "$mode" = "file" ]; then
+      openssl dgst "-$algo" "$input" | awk '{print $NF}'
+    else
+      printf '%s' "$input" | openssl dgst "-$algo" | awk '{print $NF}'
+    fi
+    return
+  fi
+
+  case "$algo" in
+    sha256)
+      if command -v sha256sum >/dev/null 2>&1; then
+        if [ "$mode" = "file" ]; then
+          sha256sum "$input" | awk '{print $1}'
+        else
+          printf '%s' "$input" | sha256sum | awk '{print $1}'
+        fi
+        return
+      fi
+      ;;
+    sha1)
+      if command -v sha1sum >/dev/null 2>&1; then
+        if [ "$mode" = "file" ]; then
+          sha1sum "$input" | awk '{print $1}'
+        else
+          printf '%s' "$input" | sha1sum | awk '{print $1}'
+        fi
+        return
+      fi
+      ;;
+    sha512)
+      if command -v sha512sum >/dev/null 2>&1; then
+        if [ "$mode" = "file" ]; then
+          sha512sum "$input" | awk '{print $1}'
+        else
+          printf '%s' "$input" | sha512sum | awk '{print $1}'
+        fi
+        return
+      fi
+      ;;
+    md5)
+      if command -v md5sum >/dev/null 2>&1; then
+        if [ "$mode" = "file" ]; then
+          md5sum "$input" | awk '{print $1}'
+        else
+          printf '%s' "$input" | md5sum | awk '{print $1}'
+        fi
+        return
+      fi
+      ;;
+  esac
+
+  die "Hash tool not available for algo: $algo"
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/50_install.sh ---
+# Install monolith script
+# @cmd install Install bumbuhelper and aliases.
+
+install_self() {
+  local target_dir="/usr/local/bin"
+  local name="bumbuhelper"
+  local install_deps=0
+  local install_autocomplete_default=1
+  local -a deps=(bash sed tr sort wc dirname mktemp tar gzip base64 openssl rsync find chmod awk)
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --system)
+        target_dir="/usr/local/bin"
+        shift
+        ;;
+      --user)
+        target_dir="$HOME/.local/bin"
+        shift
+        ;;
+      --dir)
+        target_dir="$2"
+        shift 2
+        ;;
+      --deps)
+        install_deps=1
+        shift
+        ;;
+      --no-autocomplete)
+        install_autocomplete_default=0
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  local -a missing=()
+  local dep
+  for dep in "${deps[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      missing+=("$dep")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    if [ "$install_deps" -eq 1 ]; then
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -y
+        sudo apt-get install -y coreutils sed
+      elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y coreutils sed
+      elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Sy --noconfirm coreutils sed
+      elif command -v apk >/dev/null 2>&1; then
+        sudo apk add coreutils sed
+      elif command -v brew >/dev/null 2>&1; then
+        brew install coreutils gnu-sed
+      else
+        die "Missing deps: ${missing[*]}. Install them manually."
+      fi
+    else
+      log_warn "Missing deps: ${missing[*]} (run install with --deps to attempt install)"
+    fi
+  fi
+
+  local tmp=""
+  local use_stdin=0
+
+  if [ ! -t 0 ]; then
+    use_stdin=1
+    tmp="$(mktemp)"
+    cat > "$tmp"
+    chmod +x "$tmp"
+  else
+    tmp="$(get_current_script)"
+  fi
+
+  if [ ! -w "$target_dir" ]; then
+    sudo mkdir -p "$target_dir"
+    if [ "$use_stdin" -eq 1 ]; then
+      sudo mv "$tmp" "$target_dir/$name"
+    else
+      sudo cp "$tmp" "$target_dir/$name"
+    fi
+    sudo chmod +x "$target_dir/$name"
+  else
+    mkdir -p "$target_dir"
+    if [ "$use_stdin" -eq 1 ]; then
+      mv "$tmp" "$target_dir/$name"
+    else
+      cp "$tmp" "$target_dir/$name"
+    fi
+    chmod +x "$target_dir/$name"
+  fi
+
+  log "Installed to $target_dir/$name"
+
+  local -a aliases=(bh bhelper bhelp helper)
+  local alias
+  if [ ! -w "$target_dir" ]; then
+    for alias in "${aliases[@]}"; do
+      sudo ln -sf "$target_dir/$name" "$target_dir/$alias"
+    done
+  else
+    for alias in "${aliases[@]}"; do
+      ln -sf "$target_dir/$name" "$target_dir/$alias"
+    done
+  fi
+  log "Aliases installed: ${aliases[*]}"
+
+  if [ "$install_autocomplete_default" -eq 1 ]; then
+    local scope="--user"
+    if [ ! -w "$target_dir" ]; then
+      scope="--system"
+    elif [[ "$target_dir" != "$HOME"/* ]]; then
+      scope="--system"
+    fi
+    install_autocomplete "$scope"
+  fi
+}
+
+# --- /home/punppis/linux-utils/helper/src/functions/60_autocomplete.sh ---
+# Bash autocomplete support
+# @cmd autocomplete Print or install bash completion.
+
+print_autocomplete() {
+  cat <<'EOF'
+_bumbuhelper_complete() {
+  local cur prev words cword
+  _init_completion -n : || return
+
+  local cmds="utils interactive fs ssh docker data compress transform path file create_array ssh-circlejerk ssh-copy-id ssh-command install autocomplete get_current_script get_path compress decompress encrypt decrypt base64 hash rsync choose reset_permissions commands help"
+  if [[ ${cword} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "${cmds}" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == docker ]]; then
+    COMPREPLY=( $(compgen -W "folders update update_all" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == docker && ${words[2]} == folders ]]; then
+    COMPREPLY=( $(compgen -W "all" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == utils ]]; then
+    COMPREPLY=( $(compgen -W "create_array commands help install autocomplete" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == interactive ]]; then
+    COMPREPLY=( $(compgen -W "choose" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == fs ]]; then
+    COMPREPLY=( $(compgen -W "path file" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == ssh ]]; then
+    COMPREPLY=( $(compgen -W "ssh-circlejerk ssh-copy-id ssh-command" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == data ]]; then
+    COMPREPLY=( $(compgen -W "base64 compress decompress decrypt" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == compress ]]; then
+    COMPREPLY=( $(compgen -W "compress decompress" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == transform ]]; then
+    COMPREPLY=( $(compgen -W "encrypt decrypt base64 hash" -- "${cur}") )
+    return
+  fi
+  if [[ ${words[1]} == path || ( ${words[1]} == fs && ${words[2]} == path ) ]]; then
+    COMPREPLY=( $(compgen -W "get_current_script get_path" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == file || ( ${words[1]} == fs && ${words[2]} == file ) ]]; then
+    COMPREPLY=( $(compgen -W "rsync reset_permissions" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == install ]]; then
+    COMPREPLY=( $(compgen -W "--system --user --dir --deps --no-autocomplete" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == utils && ${words[2]} == install ]]; then
+    COMPREPLY=( $(compgen -W "--system --user --dir --deps --no-autocomplete" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == autocomplete ]]; then
+    COMPREPLY=( $(compgen -W "--install --system --user" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == utils && ${words[2]} == autocomplete ]]; then
+    COMPREPLY=( $(compgen -W "--install --system --user" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == compress ]]; then
+    COMPREPLY=( $(compgen -W "--output --format" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == decompress ]]; then
+    COMPREPLY=( $(compgen -W "--output" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == encrypt || ${words[1]} == decrypt ]]; then
+    COMPREPLY=( $(compgen -W "--output --password" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == transform && ( ${words[2]} == encrypt || ${words[2]} == decrypt ) ]]; then
+    COMPREPLY=( $(compgen -W "--output --password" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == base64 || ( ${words[1]} == data && ${words[2]} == base64 ) || ( ${words[1]} == transform && ${words[2]} == base64 ) ]]; then
+    COMPREPLY=( $(compgen -W "--decode --encode -d -e" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == hash || ( ${words[1]} == transform && ${words[2]} == hash ) ]]; then
+    COMPREPLY=( $(compgen -W "--algo -a" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == choose ]]; then
+    COMPREPLY=( $(compgen -W "--default -d --multi -m" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == reset_permissions ]]; then
+    COMPREPLY=( $(compgen -W "--files --dirs" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == file && ${words[2]} == reset_permissions ]]; then
+    COMPREPLY=( $(compgen -W "--files --dirs" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == compress && ${cword} -eq 2 && ${cur} == -* ]]; then
+    COMPREPLY=( $(compgen -W "--output --format" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == compress && ( ${words[2]} == compress ) ]]; then
+    COMPREPLY=( $(compgen -W "--output --format" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == compress && ( ${words[2]} == decompress ) ]]; then
+    COMPREPLY=( $(compgen -W "--output" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == transform && ( ${words[2]} == encrypt || ${words[2]} == decrypt ) ]]; then
+    COMPREPLY=( $(compgen -W "--output --password" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == data && ( ${words[2]} == compress ) ]]; then
+    COMPREPLY=( $(compgen -W "--output --format" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == data && ( ${words[2]} == decompress ) ]]; then
+    COMPREPLY=( $(compgen -W "--output" -- "${cur}") )
+    return
+  fi
+
+  if [[ ${words[1]} == data && ${words[2]} == decrypt ]]; then
+    COMPREPLY=( $(compgen -W "--output --password" -- "${cur}") )
+    return
+  fi
+
+}
+
+complete -F _bumbuhelper_complete bumbuhelper
+complete -F _bumbuhelper_complete bh
+complete -F _bumbuhelper_complete bhelper
+complete -F _bumbuhelper_complete bhelp
+complete -F _bumbuhelper_complete helper
+EOF
+}
+
+install_autocomplete() {
+  local target=""
+  local scope="user"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --system)
+        scope="system"
+        shift
+        ;;
+      --user)
+        scope="user"
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  if [ "$scope" = "system" ]; then
+    target="/etc/bash_completion.d/bumbuhelper"
+  else
+    target="$HOME/.local/share/bash-completion/completions/bumbuhelper"
+  fi
+
+  local dir
+  dir="$(dirname "$target")"
+
+  if [ ! -w "$dir" ]; then
+    sudo mkdir -p "$dir"
+    print_autocomplete | sudo tee "$target" >/dev/null
+  else
+    mkdir -p "$dir"
+    print_autocomplete > "$target"
+  fi
+
+  log "Autocomplete installed: $target"
+}
+
+# --- /home/punppis/linux-utils/helper/src/app.sh ---
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# @cmd utils Group: general utilities.
+# @cmd interactive Group: interactive helpers.
+# @cmd fs Group: filesystem helpers (path/file).
+# @cmd ssh Group: ssh helpers.
+# @cmd docker Group: docker helpers.
+# @cmd data Group: data helpers.
+# @cmd compress Group: compression helpers.
+# @cmd transform Group: encryption/base64/hash helpers.
+# @cmd path Group: path utilities.
+# @cmd file Group: file utilities.
+
+if [ -d "$ROOT_DIR/functions" ]; then
+    for f in "$ROOT_DIR/functions/"*.sh; do
+        # shellcheck source=/dev/null
+        . "$f"
+    done
+fi
+
+is_internal_command() {
+    case "${1:-}" in
+        help|-h|--help|commands|create_array|ssh-circlejerk|ssh-copy-id|ssh-command|docker|install|autocomplete|get_current_script|get_path|compress|decompress|encrypt|decrypt|base64|hash|rsync|choose|reset_permissions|utils|interactive|fs|ssh|data|compress|transform|path|file)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_group_command() {
+    case "${1:-}" in
+        utils|interactive|fs|ssh|docker|data|compress|transform|path|file)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+run_internal() {
+    case "${1:-}" in
+        help|-h|--help)
+            show_help
+            ;;
+        commands)
+            list_commands
+            ;;
+        create_array)
+            shift
+            create_array "$@"
+            ;;
+        ssh-circlejerk)
+            shift
+            ssh_circlejerk "$@"
+            ;;
+        ssh-copy-id)
+            shift
+            ssh_copy_id_multi "$@"
+            ;;
+        ssh-command)
+            shift
+            ssh_command_multi "$@"
+            ;;
+        docker)
+            shift
+            case "${1:-}" in
+                folders)
+                    if [ "${2:-}" = "all" ]; then
+                        docker_folders_all
+                    else
+                        die "Usage: docker folders all"
+                    fi
+                    ;;
+                update)
+                    docker_update
+                    ;;
+                update_all)
+                    docker_update_all
+                    ;;
+                *)
+                    die "Usage: docker <folders|update|update_all>"
+                    ;;
+            esac
+            ;;
+        install)
+            shift
+            install_self "$@"
+            ;;
+        autocomplete)
+            shift
+            if [ "${1:-}" = "--install" ]; then
+                shift
+                install_autocomplete "$@"
+            else
+                print_autocomplete
+            fi
+            ;;
+        get_current_script)
+            shift
+            get_current_script "$@"
+            ;;
+        get_path)
+            shift
+            get_path "$@"
+            ;;
+        compress)
+            shift
+            if [ "${1:-}" = "compress" ] || [ "${1:-}" = "decompress" ]; then
+                run_internal "$@"
+            else
+                compress "$@"
+            fi
+            ;;
+        decompress)
+            shift
+            decompress "$@"
+            ;;
+        encrypt)
+            shift
+            encrypt "$@"
+            ;;
+        decrypt)
+            shift
+            decrypt "$@"
+            ;;
+        base64)
+            shift
+            base64_cmd "$@"
+            ;;
+        hash)
+            shift
+            hash_cmd "$@"
+            ;;
+        rsync)
+            shift
+            rsync_helper "$@"
+            ;;
+        choose)
+            shift
+            choose "$@"
+            ;;
+        reset_permissions)
+            shift
+            reset_permissions "$@"
+            ;;
+        utils)
+            shift
+            case "${1:-}" in
+                create_array|commands|help|install|autocomplete)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: utils <create_array|commands|help|install|autocomplete>"
+                    ;;
+            esac
+            ;;
+        interactive)
+            shift
+            case "${1:-}" in
+                choose)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: interactive <choose>"
+                    ;;
+            esac
+            ;;
+        fs)
+            shift
+            case "${1:-}" in
+                path|file)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: fs <path|file>"
+                    ;;
+            esac
+            ;;
+        ssh)
+            shift
+            case "${1:-}" in
+                ssh-circlejerk|ssh-copy-id|ssh-command)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: ssh <ssh-circlejerk|ssh-copy-id|ssh-command>"
+                    ;;
+            esac
+            ;;
+        data)
+            shift
+            case "${1:-}" in
+                base64|compress|decompress|decrypt)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: data <base64|compress|decompress|decrypt>"
+                    ;;
+            esac
+            ;;
+        transform)
+            shift
+            case "${1:-}" in
+                encrypt|decrypt|base64|hash)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: transform <encrypt|decrypt|base64|hash>"
+                    ;;
+            esac
+            ;;
+        path)
+            shift
+            case "${1:-}" in
+                get_current_script|get_path)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: path <get_current_script|get_path>"
+                    ;;
+            esac
+            ;;
+        file)
+            shift
+            case "${1:-}" in
+                rsync|reset_permissions)
+                    run_internal "$@"
+                    ;;
+                *)
+                    die "Usage: file <rsync|reset_permissions>"
+                    ;;
+            esac
+            ;;
+        *)
+            die "Unknown command: ${1:-}"
+            ;;
+    esac
+}
+
+main() {
+    if [ "$#" -eq 0 ]; then
+        show_help
+        exit 1
+    fi
+
+    if is_alias_name "${1:-}"; then
+        shift
+    fi
+
+    if [ "$#" -ge 2 ] && is_internal_command "${1:-}" && is_internal_command "${2:-}" && ! is_group_command "${1:-}"; then
+        local first="$1"
+        local second="$2"
+        shift 2
+        run_internal "$first" | run_internal "$second" "$@"
+        return
+    fi
+
+    run_internal "$@"
+}
+
+main "$@"
