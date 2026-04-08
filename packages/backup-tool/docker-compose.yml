@@ -1,0 +1,36 @@
+# backup-tool — Docker Compose (run on swarm manager node)
+#
+# Deploy as a normal compose stack on the manager node:
+#   docker compose up -d
+#
+# Interactive setup (run once before starting):
+#   docker compose run --rm backup setup
+
+services:
+  backup:
+    build: .
+    container_name: backup-tool
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      # Persist configuration and state across restarts
+      - ./config:/etc/backup-tool
+      # Persist backup state (alert timers, etc.)
+      - backup-state:/var/lib/backup-tool
+      # Logs
+      - backup-logs:/var/log/backup-tool
+      # Backup destination — change this to your preferred drive/path
+      - /backup:/backup
+      # Docker socket — needed to query swarm and copy from volumes
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # SSH keys — mount your host SSH keys for rsync to remote hosts
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      - TZ=${TZ:-UTC}
+    # Override to run setup wizard interactively:
+    #   docker compose run --rm backup setup
+
+volumes:
+  backup-state:
+  backup-logs:

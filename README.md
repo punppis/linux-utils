@@ -77,6 +77,33 @@ A robust Debian/Ubuntu-friendly tool to update Docker Compose stacks.
 - Sufficient permissions to run docker commands (may require sudo)
 - `flock` command (usually pre-installed on Linux systems)
 
+### backup-tool
+
+A simple, robust backup tool for homelabs. Dockerized with privileges, runs on a Docker Swarm manager node.
+
+**Features:**
+
+- Incremental backups via rsync (SSH hosts) and docker cp (container volumes)
+- Interactive setup wizard for hosts, paths, drives, and Telegram alerts
+- Time & size based retention per host/path
+- Replicate important backups to multiple drives (compressed replicas, no RAID)
+- Telegram bot alerts with exponential back-off (offline, disk space, errors)
+- Offline detection every 30 seconds, independent of backup schedule
+
+**Quick start:**
+
+```bash
+cd packages/backup-tool
+
+# Interactive setup
+docker compose run --rm backup setup
+
+# Start the service
+docker compose up -d
+```
+
+See [packages/backup-tool/README.md](packages/backup-tool/README.md) for full documentation.
+
 ### create-package
 
 A tool to create new package directories with bash script templates.

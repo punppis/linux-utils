@@ -1,0 +1,25 @@
+# backup-tool example configuration
+#
+# Copy this file to config/backup.conf and edit as needed,
+# or run the interactive setup: docker compose run --rm backup setup
+
+# Where to store backups (must match the volume mount in docker-compose.yml)
+backup_dest=/backup
+
+# How often to run backups (minutes)
+backup_interval_min=60
+
+# Important drives — comma-separated mount points for replication
+# After backing up important folders, latest snapshots are replicated
+# to every drive listed here (no RAID — simple independent copies).
+# Replicas are compressed after copy; main backup stays uncompressed for rsync.
+# important_drives=/mnt/usb1,/mnt/usb2
+
+# Important folders — comma-separated, relative to backup_dest
+# Format: host_label/safe_path  (e.g. nas/var_data, pi4/home_user)
+# important_folders=nas/var_data,pi4/home_user
+
+# Telegram alerts (optional)
+# See README.md for setup instructions.
+# telegram_bot_token=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+# telegram_chat_id=123456789
