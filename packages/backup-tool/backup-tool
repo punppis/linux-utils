@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# backup-tool — main entry point.
+# Runs the monitor loop in the background and executes timed incremental backups.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load libraries
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+# shellcheck source=lib/telegram.sh
+source "${SCRIPT_DIR}/lib/telegram.sh"
+# shellcheck source=lib/monitor.sh
+source "${SCRIPT_DIR}/lib/monitor.sh"
+# shellcheck source=lib/backup.sh
+source "${SCRIPT_DIR}/lib/backup.sh"
+# shellcheck source=lib/retention.sh
+source "${SCRIPT_DIR}/lib/retention.sh"
+# shellcheck source=lib/replication.sh
+source "${SCRIPT_DIR}/lib/replication.sh"
+
+ensure_dirs
+
+# ── Usage ────────────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+backup-tool v${BACKUP_TOOL_VERSION}
+
+Usage:
+  backup-tool run          Start continuous backup + monitoring loop (default)
+  backup-tool once         Run a single backup cycle then exit
+  backup-tool setup        Launch interactive configuration wizard
+  backup-tool monitor      Run only the monitor loop (no backups)
+  backup-tool retention    Run only retention cleanup
+  backup-tool replicate    Run only replication of important folders
+  backup-tool help         Show this help
+
+Environment:
+  BACKUP_CONF_DIR   Config directory   (default: /etc/backup-tool)
+  BACKUP_STATE_DIR  State directory    (default: /var/lib/backup-tool)
+  BACKUP_LOG_DIR    Log directory      (default: /var/log/backup-tool)
+EOF
+}
+
+# ── Single backup cycle ─────────────────────────────────────────────────────
+run_cycle() {
+  local start
+  start=$(date +%s)
+  log_step "Backup cycle starting at $(date)"
+
+  backup_all || true
+  retention_all || true
+  replicate_important || true
+
+  local elapsed=$(( $(date +%s) - start ))
+  log_ok "Backup cycle complete in ${elapsed}s"
+}
+
+# ── Continuous loop ──────────────────────────────────────────────────────────
+run_loop() {
+  local interval_min
+  interval_min=$(cfg_get "$BACKUP_CONF_FILE" backup_interval_min 60)
+  local interval_sec=$(( interval_min * 60 ))
+
+  log_info "backup-tool v${BACKUP_TOOL_VERSION} starting"
+  log_info "Backup interval: ${interval_min}m, config: ${BACKUP_CONF_DIR}"
+
+  # Start monitor in background
+  monitor_loop &
+  local monitor_pid=$!
+  trap 'kill $monitor_pid 2>/dev/null || true; exit 0' EXIT INT TERM
+  log_info "Monitor started (PID $monitor_pid)"
+
+  while true; do
+    run_cycle 2>&1 | tee -a "${BACKUP_LOG_DIR}/backup.log"
+    log_info "Next backup in ${interval_min}m — sleeping"
+    sleep "$interval_sec"
+  done
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+main() {
+  local cmd="${1:-run}"
+  case "$cmd" in
+    run)
+      run_loop
+      ;;
+    once)
+      run_cycle
+      ;;
+    setup)
+      # Re-exec into the setup wizard
+      exec "${SCRIPT_DIR}/setup" "${@:2}"
+      ;;
+    monitor)
+      monitor_loop
+      ;;
+    retention)
+      retention_all
+      ;;
+    replicate)
+      replicate_important
+      ;;
+    help|--help|-h)
+      usage
+      ;;
+    *)
+      log_error "Unknown command: $cmd"
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

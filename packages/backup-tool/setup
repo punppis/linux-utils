@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# Interactive setup wizard for backup-tool.
+# Guides the user through configuring hosts, paths, drives, and Telegram alerts.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+# shellcheck source=lib/telegram.sh
+source "${SCRIPT_DIR}/lib/telegram.sh"
+
+ensure_dirs
+
+# ── TUI helpers ──────────────────────────────────────────────────────────────
+prompt() {
+  local var="$1" msg="$2" default="${3:-}"
+  local input
+  if [[ -n "$default" ]]; then
+    read -rp "$msg [$default]: " input
+    eval "$var=\"${input:-$default}\""
+  else
+    read -rp "$msg: " input
+    eval "$var=\"$input\""
+  fi
+}
+
+prompt_yesno() {
+  local msg="$1" default="${2:-n}"
+  local answer
+  read -rp "$msg [y/n] ($default): " answer
+  answer="${answer:-$default}"
+  [[ "$answer" =~ ^[yY] ]]
+}
+
+# Numbered menu selector — prints chosen value(s). Allows multiple selection.
+select_menu() {
+  local title="$1"; shift
+  local -a items=("$@")
+  local -a selected=()
+
+  echo ""
+  echo -e "${COL_CYAN}${title}${COL_RESET}"
+  local i=1
+  for item in "${items[@]}"; do
+    echo "  $i) $item"
+    (( i++ ))
+  done
+  echo "  0) Done selecting"
+
+  while true; do
+    local choice
+    read -rp "Select (number): " choice
+    if [[ "$choice" == "0" ]]; then
+      break
+    fi
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#items[@]} )); then
+      selected+=("${items[choice-1]}")
+      echo -e "  ${COL_GREEN}+ ${items[choice-1]}${COL_RESET}"
+    else
+      echo "  Invalid choice"
+    fi
+  done
+
+  printf '%s\n' "${selected[@]}"
+}
+
+# ── Step 1: Backup destination ───────────────────────────────────────────────
+setup_destination() {
+  log_step "Backup destination"
+  local dest
+  prompt dest "Where should backups be stored?" "/backup"
+  mkdir -p "$dest"
+  cfg_set "$BACKUP_CONF_FILE" backup_dest "$dest"
+  log_ok "Backup destination: $dest"
+}
+
+# ── Step 2: Backup interval ─────────────────────────────────────────────────
+setup_schedule() {
+  log_step "Backup schedule"
+  local interval
+  prompt interval "Backup interval in minutes" "60"
+  cfg_set "$BACKUP_CONF_FILE" backup_interval_min "$interval"
+  log_ok "Backup every ${interval} minutes"
+}
+
+# ── Step 3: Add hosts ───────────────────────────────────────────────────────
+setup_hosts() {
+  log_step "Configure backup hosts"
+  echo "  You can add SSH hosts (rsync) and/or Docker Swarm nodes."
+
+  while true; do
+    echo ""
+    echo "  1) Add SSH host (rsync)"
+    echo "  2) Add Docker Swarm node (container volumes)"
+    echo "  0) Done adding hosts"
+    local choice
+    read -rp "Choice: " choice
+
+    case "$choice" in
+      1) add_ssh_host ;;
+      2) add_docker_host ;;
+      0) break ;;
+      *) echo "  Invalid choice" ;;
+    esac
+  done
+}
+
+add_ssh_host() {
+  local name addr
+  prompt name "Short name for this host (e.g. nas, pi4)" ""
+  prompt addr "SSH address (user@host)" ""
+
+  [[ -z "$name" || -z "$addr" ]] && { log_warn "Skipped — name and address required"; return; }
+
+  log_info "Testing SSH connection to $addr ..."
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes "$addr" true 2>/dev/null; then
+    log_ok "Connected to $addr"
+  else
+    log_warn "Cannot connect to $addr — saving anyway (check SSH keys)"
+  fi
+
+  local hcfg="${BACKUP_HOSTS_DIR}/${name}.conf"
+  cfg_set "$hcfg" type "ssh"
+  cfg_set "$hcfg" address "$addr"
+
+  setup_host_paths "$hcfg" "$name" "$addr" "ssh"
+  setup_host_retention "$hcfg" "$name"
+  log_ok "Host '$name' saved"
+}
+
+add_docker_host() {
+  local name addr
+  prompt name "Short name for this Docker node (e.g. swarm1)" ""
+  prompt addr "SSH address of the Docker node (user@host)" ""
+
+  [[ -z "$name" || -z "$addr" ]] && { log_warn "Skipped — name and address required"; return; }
+
+  local hcfg="${BACKUP_HOSTS_DIR}/${name}.conf"
+  cfg_set "$hcfg" type "docker"
+  cfg_set "$hcfg" address "$addr"
+
+  # List containers / volumes on the remote node
+  log_info "Fetching Docker volumes from $addr ..."
+  local volumes
+  volumes=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$addr" \
+    "docker volume ls --format '{{.Name}}'" 2>/dev/null || echo "")
+
+  if [[ -n "$volumes" ]]; then
+    echo "  Available volumes on $addr:"
+    local vol_arr=()
+    while IFS= read -r v; do vol_arr+=("$v"); done <<< "$volumes"
+    local chosen
+    chosen=$(select_menu "Select volumes to back up:" "${vol_arr[@]}")
+    if [[ -n "$chosen" ]]; then
+      local joined=""
+      while IFS= read -r v; do
+        joined="${joined:+${joined},}${v}"
+      done <<< "$chosen"
+      cfg_set "$hcfg" paths "$joined"
+    fi
+  else
+    log_warn "Could not list volumes — enter paths manually"
+    setup_host_paths "$hcfg" "$name" "$addr" "docker"
+  fi
+
+  setup_host_retention "$hcfg" "$name"
+  log_ok "Docker host '$name' saved"
+}
+
+setup_host_paths() {
+  local hcfg="$1" name="$2" addr="$3"
+  # $4 = htype (reserved for future per-type path validation)
+  echo ""
+  echo "  Enter paths to back up on $name ($addr)."
+  echo "  For SSH hosts these are remote directory paths."
+  echo "  For Docker hosts these are volume names."
+
+  local paths=()
+  while true; do
+    local p
+    read -rp "  Path (empty to finish): " p
+    [[ -z "$p" ]] && break
+    paths+=("$p")
+  done
+
+  if [[ ${#paths[@]} -gt 0 ]]; then
+    local joined
+    joined=$(printf '%s,' "${paths[@]}")
+    joined="${joined%,}"
+    cfg_set "$hcfg" paths "$joined"
+  fi
+}
+
+setup_host_retention() {
+  local hcfg="$1" name="$2"
+  echo ""
+  local days size
+  prompt days "Retention days for $name (0 = keep forever)" "30"
+  prompt size "Max total size for $name (e.g. 10G, empty = unlimited)" ""
+  cfg_set "$hcfg" retention_days "$days"
+  [[ -n "$size" ]] && cfg_set "$hcfg" retention_max_size "$size"
+}
+
+# ── Step 4: Important drives ────────────────────────────────────────────────
+setup_drives() {
+  log_step "Important drives (for replication)"
+  echo "  Select mount points to replicate important backups to."
+  echo "  Each drive gets a compressed copy. (No RAID — simple copies.)"
+
+  # List mounted block devices (exclude tmpfs, devtmpfs, etc.)
+  local mounts=()
+  while IFS= read -r m; do
+    mounts+=("$m")
+  done < <(df -h --output=target,size,avail,fstype 2>/dev/null \
+    | tail -n +2 | grep -v -E 'tmpfs|devtmpfs|squashfs|overlay' \
+    | awk '{print $1 " (" $2 " total, " $3 " free, " $4 ")"}')
+
+  if [[ ${#mounts[@]} -gt 0 ]]; then
+    local chosen
+    chosen=$(select_menu "Available mount points:" "${mounts[@]}")
+    if [[ -n "$chosen" ]]; then
+      # Extract just the mount path (first field)
+      local drives=()
+      while IFS= read -r line; do
+        drives+=("$(echo "$line" | awk '{print $1}')")
+      done <<< "$chosen"
+      local joined
+      joined=$(printf '%s,' "${drives[@]}")
+      joined="${joined%,}"
+      cfg_set "$BACKUP_CONF_FILE" important_drives "$joined"
+      log_ok "Important drives: $joined"
+    fi
+  else
+    echo "  No suitable mount points detected. Enter manually:"
+    local drives=()
+    while true; do
+      local d
+      read -rp "  Drive mount path (empty to finish): " d
+      [[ -z "$d" ]] && break
+      drives+=("$d")
+    done
+    if [[ ${#drives[@]} -gt 0 ]]; then
+      local joined
+      joined=$(printf '%s,' "${drives[@]}")
+      joined="${joined%,}"
+      cfg_set "$BACKUP_CONF_FILE" important_drives "$joined"
+    fi
+  fi
+}
+
+# ── Step 5: Important folders ────────────────────────────────────────────────
+setup_important_folders() {
+  log_step "Important folders (replicated to all drives)"
+  echo "  Enter folder paths relative to backup destination."
+  echo "  Format: host/path_name (e.g. nas/var_data, pi4/home_user)"
+
+  local folders=()
+  while true; do
+    local f
+    read -rp "  Important folder (empty to finish): " f
+    [[ -z "$f" ]] && break
+    folders+=("$f")
+  done
+
+  if [[ ${#folders[@]} -gt 0 ]]; then
+    local joined
+    joined=$(printf '%s,' "${folders[@]}")
+    joined="${joined%,}"
+    cfg_set "$BACKUP_CONF_FILE" important_folders "$joined"
+    log_ok "Important folders: $joined"
+  fi
+}
+
+# ── Step 6: Telegram alerts ─────────────────────────────────────────────────
+setup_telegram() {
+  log_step "Telegram alerts"
+  echo ""
+  echo "  To set up Telegram alerts:"
+  echo "  1. Open Telegram and search for @BotFather"
+  echo "  2. Send /newbot and follow the prompts to create a bot"
+  echo "  3. Copy the bot token (e.g. 123456:ABC-DEF...)"
+  echo "  4. Start a chat with your new bot (send /start)"
+  echo "  5. To get your chat ID, visit:"
+  echo "     https://api.telegram.org/bot<TOKEN>/getUpdates"
+  echo "     Look for \"chat\":{\"id\":NNNNNN}"
+  echo ""
+
+  if ! prompt_yesno "Configure Telegram alerts now?"; then
+    log_info "Skipping Telegram setup"
+    return
+  fi
+
+  local token chat_id
+  prompt token "Bot token" ""
+  prompt chat_id "Chat ID" ""
+
+  if [[ -n "$token" && -n "$chat_id" ]]; then
+    cfg_set "$BACKUP_CONF_FILE" telegram_bot_token "$token"
+    cfg_set "$BACKUP_CONF_FILE" telegram_chat_id "$chat_id"
+
+    # Send test message
+    if telegram_send "$token" "$chat_id" "🔧 *backup-tool* test message — alerts configured!"; then
+      log_ok "Test message sent — check your Telegram!"
+    else
+      log_warn "Could not send test message. Check token/chat_id."
+    fi
+  else
+    log_warn "Token and chat ID both required — skipping"
+  fi
+}
+
+# ── Main wizard ──────────────────────────────────────────────────────────────
+main() {
+  echo ""
+  echo -e "${COL_CYAN}════════════════════════════════════════════${COL_RESET}"
+  echo -e "${COL_CYAN}       backup-tool — interactive setup      ${COL_RESET}"
+  echo -e "${COL_CYAN}════════════════════════════════════════════${COL_RESET}"
+  echo ""
+
+  setup_destination
+  setup_schedule
+  setup_hosts
+  setup_drives
+  setup_important_folders
+  setup_telegram
+
+  echo ""
+  log_ok "Configuration complete!"
+  echo "  Config : $BACKUP_CONF_FILE"
+  echo "  Hosts  : $BACKUP_HOSTS_DIR/"
+  echo ""
+  echo "  Start the backup service:"
+  echo "    docker compose up -d"
+  echo ""
+}
+
+main "$@"

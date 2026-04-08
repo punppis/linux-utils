@@ -1,0 +1,25 @@
+# Host config example — SSH host backed up via rsync
+#
+# Place one file per host in config/hosts.d/<name>.conf
+# Or use the interactive setup wizard.
+
+# Host type: "ssh" for rsync over SSH, "docker" for container volumes
+type=ssh
+
+# SSH address (must have passwordless key auth configured)
+address=user@192.168.1.100
+
+# Paths to back up (comma-separated)
+# For SSH hosts: remote directories
+# For Docker hosts: docker volume names
+paths=/home/user/data,/var/lib/important
+
+# Retention — time-based (days, 0 = keep forever)
+retention_days=30
+
+# Retention — size-based (optional, e.g. 10G, 500M)
+# retention_max_size=10G
+
+# Per-path retention overrides (use safe_path: slashes replaced with _)
+# retention_days_home_user_data=7
+# retention_max_size_var_lib_important=5G
