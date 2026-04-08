@@ -155,8 +155,10 @@ add_docker_host() {
     local chosen
     chosen=$(select_menu "Select volumes to back up:" "${vol_arr[@]}")
     if [[ -n "$chosen" ]]; then
-      local joined
-      joined=$(echo "$chosen" | paste -sd, -)
+      local joined=""
+      while IFS= read -r v; do
+        joined="${joined:+${joined},}${v}"
+      done <<< "$chosen"
       cfg_set "$hcfg" paths "$joined"
     fi
   else

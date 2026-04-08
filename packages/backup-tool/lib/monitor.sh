@@ -49,6 +49,7 @@ monitor_loop() {
 
     # -- Host online checks (every 30 s) --
     if [[ -d "$BACKUP_HOSTS_DIR" ]]; then
+      local host_count=0
       for hcfg in "$BACKUP_HOSTS_DIR"/*.conf; do
         [[ -f "$hcfg" ]] || continue
         local htype haddr
@@ -57,7 +58,13 @@ monitor_loop() {
         local hlabel
         hlabel=$(basename "$hcfg" .conf)
         if [[ "$htype" == "ssh" && -n "$haddr" ]]; then
+          # Limit concurrent SSH checks to avoid overwhelming the network
+          if (( host_count >= 10 )); then
+            wait
+            host_count=0
+          fi
           check_host_online "$haddr" "$hlabel" &
+          host_count=$(( host_count + 1 ))
         fi
       done
       wait  # reap background pings

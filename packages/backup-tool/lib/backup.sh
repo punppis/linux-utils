@@ -38,7 +38,7 @@ backup_docker_volume() {
 
   # Create a temporary container that mounts the volume
   if ! $docker_cmd run --rm -d --name "$tmp_container" \
-       -v "${volume}:/volume:ro" alpine:latest sleep 3600 >/dev/null 2>&1; then
+       -v "${volume}:/volume:ro" alpine:latest tail -f /dev/null >/dev/null 2>&1; then
     log_error "Failed to start temp container for volume $volume"
     alert_fire "dockervol:${volume}" "❌ Cannot backup docker volume \`${volume}\`"
     return 1

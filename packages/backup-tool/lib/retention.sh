@@ -53,7 +53,11 @@ apply_retention() {
   # ── Time-based retention ──
   if (( max_days > 0 )); then
     local cutoff
-    cutoff=$(date -d "${max_days} days ago" +%s 2>/dev/null || date -v-"${max_days}"d +%s 2>/dev/null || echo 0)
+    cutoff=$(date -d "${max_days} days ago" +%s 2>/dev/null || date -v-"${max_days}"d +%s 2>/dev/null || echo "")
+    if [[ -z "$cutoff" || "$cutoff" == "0" ]]; then
+      log_warn "Cannot compute cutoff date — skipping time-based retention"
+      return 0
+    fi
     local keep=()
     local total_count=${#snaps[@]}
     local kept_count=0
@@ -63,6 +67,12 @@ apply_retention() {
       # Parse YYYYMMDD-HHMMSS
       local snap_ts
       snap_ts=$(date -d "${snap_name:0:4}-${snap_name:4:2}-${snap_name:6:2} ${snap_name:9:2}:${snap_name:11:2}:${snap_name:13:2}" +%s 2>/dev/null || echo 0)
+      if (( snap_ts == 0 )); then
+        log_warn "Cannot parse timestamp for snapshot $snap — skipping"
+        keep+=("$snap")
+        kept_count=$(( kept_count + 1 ))
+        continue
+      fi
       local remaining=$(( total_count - removed - kept_count ))
       if (( snap_ts > 0 && snap_ts < cutoff && remaining > 1 )); then
         log_info "Retention (age): removing $snap"
